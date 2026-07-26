@@ -552,3 +552,47 @@ async fn token_budget_truncation_drops_largest_file() {
     github_mock.verify().await;
     ai_mock.verify().await;
 }
+
+// ── Token estimator edge cases ─────────────────────────────────────
+
+#[test]
+fn token_estimator_empty_string() {
+    assert_eq!(0, review_agent::tokens::estimate_tokens(""));
+}
+
+#[test]
+fn token_estimator_whitespace() {
+    assert!(review_agent::tokens::estimate_tokens("   \n  \t  ") > 0);
+}
+
+#[test]
+fn token_estimator_multibyte() {
+    let chinese = "你好世界，这是一段中文代码审查";
+    assert!(review_agent::tokens::estimate_tokens(chinese) > 0);
+}
+
+#[test]
+fn token_estimator_long_string() {
+    let long = "a".repeat(100_000);
+    let tokens = review_agent::tokens::estimate_tokens(&long);
+    assert!(tokens > 10_000, "long string should produce many tokens");
+    assert!(tokens < 100_000);
+}
+
+// ── Language detection edge cases ──────────────────────────────────
+
+#[test]
+fn language_unknown_extension() {
+    assert_eq!(
+        "Unknown",
+        review_agent::language::detect_language("file.xyz")
+    );
+}
+
+#[test]
+fn language_known_extensions() {
+    assert_eq!("Rust", review_agent::language::detect_language("main.rs"));
+    assert_eq!("Python", review_agent::language::detect_language("app.py"));
+    assert_eq!("C++", review_agent::language::detect_language("lib.hpp"));
+}
+
