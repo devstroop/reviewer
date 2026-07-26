@@ -359,8 +359,10 @@ impl ReviewEngine {
                             .post_review(owner, repo, number, &review_text)
                             .await?;
                     } else {
-                        tracing::warn!(
-                            "post_to_github is true but GITHUB_TOKEN not configured — no review posted"
+                        tracing::error!(
+                            "post_to_github is true but GITHUB_TOKEN is not configured — \
+                             review for PR #{} was NOT posted to GitHub. Set GITHUB_TOKEN env var.",
+                            number,
                         );
                     }
                 } else {
