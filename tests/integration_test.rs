@@ -595,4 +595,3 @@ fn language_known_extensions() {
     assert_eq!("Python", review_agent::language::detect_language("app.py"));
     assert_eq!("C++", review_agent::language::detect_language("lib.hpp"));
 }
-

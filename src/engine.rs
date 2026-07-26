@@ -202,7 +202,8 @@ impl ReviewEngine {
                 let r = repo.clone();
                 let github = self.github_svc.as_ref().ok_or_else(|| {
                     AgentError::Config(
-                        "GITHUB_TOKEN is required to review PRs — set via env var or config file".into(),
+                        "GITHUB_TOKEN is required to review PRs — set via env var or config file"
+                            .into(),
                     )
                 })?;
                 let pr = github.get_pr_metadata(&o, &r, number).await?;

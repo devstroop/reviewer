@@ -300,9 +300,15 @@ mod tests {
     #[test]
     fn validate_passes_without_token() {
         let s = Settings::default();
-        assert!(s.github.token.inner().is_empty(), "token should be empty by default");
+        assert!(
+            s.github.token.inner().is_empty(),
+            "token should be empty by default"
+        );
         let result = s.validate();
-        assert!(result.is_err(), "should fail on missing API key (token is now optional)");
+        assert!(
+            result.is_err(),
+            "should fail on missing API key (token is now optional)"
+        );
         assert!(result.unwrap_err().to_string().contains("AI_API_KEY"));
     }
 
