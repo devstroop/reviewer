@@ -7,7 +7,7 @@
 
 use crate::ai::AiClient;
 use crate::config::Settings;
-use crate::error::Result;
+use crate::error::{AgentError, Result};
 use crate::services::{DiffService, GithubService, PromptBuilder, PromptContext};
 use crate::tokens::estimate_tokens;
 use serde::Serialize;
@@ -143,7 +143,7 @@ pub struct ReviewStats {
 /// Every IO surface adapts through this single `ReviewRequest → ReviewResult`
 /// contract.
 pub struct ReviewEngine {
-    github_svc: GithubService,
+    github_svc: Option<GithubService>,
     diff_svc: DiffService,
     prompt_builder: PromptBuilder,
     ai: AiClient,
@@ -154,8 +154,13 @@ pub struct ReviewEngine {
 impl ReviewEngine {
     /// Construct a new engine from application settings.
     pub fn new(settings: &Settings) -> Result<Self> {
+        let github_svc = if settings.github.token.inner().is_empty() {
+            None
+        } else {
+            Some(GithubService::new(settings)?)
+        };
         Ok(Self {
-            github_svc: GithubService::new(settings)?,
+            github_svc,
             diff_svc: DiffService::new(settings),
             prompt_builder: PromptBuilder::new(settings),
             ai: AiClient::new(settings)?,
@@ -195,8 +200,13 @@ impl ReviewEngine {
             } => {
                 let o = owner.clone();
                 let r = repo.clone();
-                let pr = self.github_svc.get_pr_metadata(&o, &r, number).await?;
-                let diff = self.github_svc.get_pr_diff(&o, &r, number).await?;
+                let github = self.github_svc.as_ref().ok_or_else(|| {
+                    AgentError::Config(
+                        "GITHUB_TOKEN is required to review PRs — set via env var or config file".into(),
+                    )
+                })?;
+                let pr = github.get_pr_metadata(&o, &r, number).await?;
+                let diff = github.get_pr_diff(&o, &r, number).await?;
                 ResolvedSource {
                     pr_number: Some(number),
                     pr_title: Some(pr.title),
@@ -344,9 +354,15 @@ impl ReviewEngine {
         if post_to_github {
             if let (Some(owner), Some(repo)) = (resolved.owner.as_ref(), resolved.repo.as_ref()) {
                 if let Some(number) = resolved.pr_number {
-                    self.github_svc
-                        .post_review(owner, repo, number, &review_text)
-                        .await?;
+                    if let Some(ref github) = self.github_svc {
+                        github
+                            .post_review(owner, repo, number, &review_text)
+                            .await?;
+                    } else {
+                        tracing::warn!(
+                            "post_to_github is true but GITHUB_TOKEN not configured — no review posted"
+                        );
+                    }
                 } else {
                     tracing::warn!(
                         "post_to_github is true but review source lacks a PR number — no review posted"

@@ -84,11 +84,6 @@ impl Settings {
     /// Call this as the last step of `load()` so the error message is
     /// actionable.
     pub fn validate(&self) -> Result<()> {
-        if self.github.token.inner().is_empty() {
-            return Err(AgentError::Config(
-                "GITHUB_TOKEN is required — set via env var or config file".into(),
-            ));
-        }
         if self.ai.api_key.inner().is_empty() {
             return Err(AgentError::Config(
                 "AI_API_KEY is required — set via env var or config file".into(),
@@ -303,11 +298,12 @@ mod tests {
     }
 
     #[test]
-    fn validate_fails_on_missing_token() {
+    fn validate_passes_without_token() {
         let s = Settings::default();
+        assert!(s.github.token.inner().is_empty(), "token should be empty by default");
         let result = s.validate();
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("GITHUB_TOKEN"));
+        assert!(result.is_err(), "should fail on missing API key (token is now optional)");
+        assert!(result.unwrap_err().to_string().contains("AI_API_KEY"));
     }
 
     #[test]
