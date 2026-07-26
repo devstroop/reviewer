@@ -24,12 +24,14 @@ pub fn init(verbose: bool) {
             .with_current_span(false)
             .with_file(false)
             .with_line_number(false)
+            .with_writer(std::io::stderr)
             .init();
     } else {
         tracing_subscriber::fmt()
             .with_env_filter(filter)
             .with_target(true)
             .compact()
+            .with_writer(std::io::stderr)
             .init();
     }
 }
