@@ -48,16 +48,28 @@ impl JsonExtractor {
                     .filter_map(|item| parse_single_finding(item))
                     .collect();
                 let dropped_count = total_items - findings.len();
-                ExtractedFindings { findings, review_text, dropped_count }
+                ExtractedFindings {
+                    findings,
+                    review_text,
+                    dropped_count,
+                }
             }
             Some(other) => {
                 warn!(
                     "Expected JSON array for findings, got {}",
                     json_type_name(&other)
                 );
-                ExtractedFindings { findings: vec![], review_text, dropped_count: 0 }
+                ExtractedFindings {
+                    findings: vec![],
+                    review_text,
+                    dropped_count: 0,
+                }
             }
-            None => ExtractedFindings { findings: vec![], review_text, dropped_count: 0 },
+            None => ExtractedFindings {
+                findings: vec![],
+                review_text,
+                dropped_count: 0,
+            },
         }
     }
 }
@@ -95,7 +107,10 @@ fn extract_json_block(text: &str) -> (Option<Value>, String) {
 /// Extract JSON from a ```<fence_lang> ... ``` block.
 ///
 /// Returns `(parsed_json, text_before_block, text_after_block)`.
-fn extract_fenced_json<'a>(text: &'a str, fence_lang: &str) -> Option<(Option<Value>, &'a str, &'a str)> {
+fn extract_fenced_json<'a>(
+    text: &'a str,
+    fence_lang: &str,
+) -> Option<(Option<Value>, &'a str, &'a str)> {
     let opener = if fence_lang.is_empty() {
         "```"
     } else {
@@ -186,7 +201,10 @@ fn parse_single_finding(value: Value) -> Option<ReviewFinding> {
         return None;
     }
 
-    let file = obj.get("file").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let file = obj
+        .get("file")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     let line = obj.get("line").and_then(|v| v.as_u64());
     let suggestion = obj
         .get("suggestion")
@@ -388,7 +406,12 @@ Some text.
                 sev
             );
             let result = JsonExtractor::extract(&input);
-            assert_eq!(result.findings.len(), 1, "Severity '{}' should be valid", sev);
+            assert_eq!(
+                result.findings.len(),
+                1,
+                "Severity '{}' should be valid",
+                sev
+            );
             assert_eq!(result.findings[0].severity, *sev);
         }
     }
@@ -403,7 +426,12 @@ Some text.
                 cat
             );
             let result = JsonExtractor::extract(&input);
-            assert_eq!(result.findings.len(), 1, "Category '{}' should be valid", cat);
+            assert_eq!(
+                result.findings.len(),
+                1,
+                "Category '{}' should be valid",
+                cat
+            );
             assert_eq!(result.findings[0].category, *cat);
         }
     }

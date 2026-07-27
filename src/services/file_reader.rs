@@ -71,8 +71,12 @@ pub(crate) fn read_single(path: &str, language_override: Option<&str>) -> Result
 /// Read all files matching a glob pattern.
 pub(crate) fn read_glob(pattern: &str) -> Result<Vec<FileContent>> {
     let mut files: Vec<FileContent> = Vec::new();
-    let entries = glob::glob(pattern)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("invalid glob pattern '{pattern}': {e}")))?;
+    let entries = glob::glob(pattern).map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("invalid glob pattern '{pattern}': {e}"),
+        )
+    })?;
 
     for entry in entries {
         let entry_path = entry.map_err(|e| {
@@ -216,8 +220,18 @@ mod tests {
     #[test]
     fn test_truncate_file_content_budget_keeps_one() {
         let mut files = vec![
-            FileContent { path: "a.rs".into(), content: "x".repeat(100_000), language: "Rust".into(), line_count: 5000 },
-            FileContent { path: "b.rs".into(), content: "x".repeat(100_000), language: "Rust".into(), line_count: 5000 },
+            FileContent {
+                path: "a.rs".into(),
+                content: "x".repeat(100_000),
+                language: "Rust".into(),
+                line_count: 5000,
+            },
+            FileContent {
+                path: "b.rs".into(),
+                content: "x".repeat(100_000),
+                language: "Rust".into(),
+                line_count: 5000,
+            },
         ];
         let dropped = truncate_file_content_budget(&mut files, 100);
         assert_eq!(dropped, 1);
@@ -226,9 +240,12 @@ mod tests {
 
     #[test]
     fn test_truncate_file_content_budget_fits_all() {
-        let mut files = vec![
-            FileContent { path: "a.rs".into(), content: "small".into(), language: "Rust".into(), line_count: 1 },
-        ];
+        let mut files = vec![FileContent {
+            path: "a.rs".into(),
+            content: "small".into(),
+            language: "Rust".into(),
+            line_count: 1,
+        }];
         let dropped = truncate_file_content_budget(&mut files, 1_000_000);
         assert_eq!(dropped, 0);
         assert_eq!(files.len(), 1);

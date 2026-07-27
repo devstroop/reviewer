@@ -20,9 +20,7 @@ pub fn to_sarif_value(result: &ReviewResult) -> serde_json::Value {
 
         let location = finding.file.as_ref().map(|file| SarifLocation {
             physical_location: PhysicalLocation {
-                artifact_location: ArtifactLocation {
-                    uri: file.clone(),
-                },
+                artifact_location: ArtifactLocation { uri: file.clone() },
                 region: finding.line.map(|line| Region { start_line: line }),
             },
         });
@@ -224,7 +222,10 @@ mod tests {
     fn test_sarif_has_schema() {
         let result = sample_result();
         let sarif = to_sarif_value(&result);
-        assert_eq!(sarif["$schema"].as_str().unwrap(), "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json");
+        assert_eq!(
+            sarif["$schema"].as_str().unwrap(),
+            "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json"
+        );
         assert_eq!(sarif["version"], "2.1.0");
     }
 
@@ -251,7 +252,9 @@ mod tests {
     fn test_sarif_rule_index() {
         let result = sample_result();
         let sarif = to_sarif_value(&result);
-        let rules = sarif["runs"][0]["tool"]["driver"]["rules"].as_array().unwrap();
+        let rules = sarif["runs"][0]["tool"]["driver"]["rules"]
+            .as_array()
+            .unwrap();
         // BTreeMap orders alphabetically: best_practice before security
         assert_eq!(rules[0]["id"], "best_practice");
         assert_eq!(rules[1]["id"], "security");
@@ -263,7 +266,10 @@ mod tests {
         let sarif = to_sarif_value(&result);
         let results = sarif["runs"][0]["results"].as_array().unwrap();
         let locs = results[0]["locations"].as_array().unwrap();
-        assert_eq!(locs[0]["physicalLocation"]["artifactLocation"]["uri"], "src/main.rs");
+        assert_eq!(
+            locs[0]["physicalLocation"]["artifactLocation"]["uri"],
+            "src/main.rs"
+        );
         assert_eq!(locs[0]["physicalLocation"]["region"]["startLine"], 42);
     }
 
@@ -289,7 +295,11 @@ mod tests {
     fn test_sarif_invocation_successful() {
         let result = sample_result();
         let sarif = to_sarif_value(&result);
-        assert!(sarif["runs"][0]["invocations"][0]["executionSuccessful"].as_bool().unwrap());
+        assert!(
+            sarif["runs"][0]["invocations"][0]["executionSuccessful"]
+                .as_bool()
+                .unwrap()
+        );
     }
 
     #[test]

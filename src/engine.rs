@@ -10,8 +10,8 @@ use crate::config::Settings;
 use crate::error::{AgentError, Result};
 use crate::services::file_reader::{self, FileContent};
 use crate::services::{
-    json_extractor::MIN_TOKENS_FOR_RETRY,
     DiffService, GithubService, JsonExtractor, PromptBuilder, PromptContext,
+    json_extractor::MIN_TOKENS_FOR_RETRY,
 };
 use crate::tokens::estimate_tokens;
 use serde::{Deserialize, Serialize};
@@ -78,10 +78,7 @@ pub enum ReviewSource {
         description: Option<String>,
     },
     /// Review all files matching a glob pattern.
-    Glob {
-        pattern: String,
-        domain: String,
-    },
+    Glob { pattern: String, domain: String },
 }
 
 /// Behaviour flags for a single review invocation.
@@ -331,8 +328,9 @@ impl ReviewEngine {
                     .file_name()
                     .map(|s| s.to_string_lossy().to_string())
                     .unwrap_or_else(|| path.clone());
-                let fc = file_reader::read_single(&path, language.as_deref())
-                    .map_err(|e| AgentError::Config(format!("Failed to read file '{path}': {e}")))?;
+                let fc = file_reader::read_single(&path, language.as_deref()).map_err(|e| {
+                    AgentError::Config(format!("Failed to read file '{path}': {e}"))
+                })?;
                 ResolvedSource {
                     pr_number: None,
                     pr_title: Some(title),
@@ -349,8 +347,9 @@ impl ReviewEngine {
                 }
             }
             ReviewSource::Glob { pattern, domain } => {
-                let files = file_reader::read_glob(&pattern)
-                    .map_err(|e| AgentError::Config(format!("Failed to read glob '{pattern}': {e}")))?;
+                let files = file_reader::read_glob(&pattern).map_err(|e| {
+                    AgentError::Config(format!("Failed to read glob '{pattern}': {e}"))
+                })?;
                 ResolvedSource {
                     pr_number: None,
                     pr_title: Some(format!("glob: {}", pattern)),
@@ -384,23 +383,39 @@ impl ReviewEngine {
             language_hint: resolved.language_hint.as_deref(),
         };
 
-        let (files_changed, files_reviewed, files_skipped, files_path_filtered,
-             files_budget_dropped, user, input_tokens_estimated) =
-            if let Some(file_contents) = resolved.file_contents.as_ref() {
-                Self::build_file_prompt(file_contents, &pb, &make_ctx(), &extra, &path_filter,
-                    self.diff_svc.max_tokens())
-            } else {
-                Self::build_diff_prompt(&resolved.raw_diff, &pb, &make_ctx(), &extra, &path_filter,
-                    &self.diff_svc)
-            };
+        let (
+            files_changed,
+            files_reviewed,
+            files_skipped,
+            files_path_filtered,
+            files_budget_dropped,
+            user,
+            input_tokens_estimated,
+        ) = if let Some(file_contents) = resolved.file_contents.as_ref() {
+            Self::build_file_prompt(
+                file_contents,
+                &pb,
+                &make_ctx(),
+                &extra,
+                &path_filter,
+                self.diff_svc.max_tokens(),
+            )
+        } else {
+            Self::build_diff_prompt(
+                &resolved.raw_diff,
+                &pb,
+                &make_ctx(),
+                &extra,
+                &path_filter,
+                &self.diff_svc,
+            )
+        };
 
         // ── 6. AI analysis ─────────────────────────────────────
-        let finish_reason_len = |co: &crate::ai::ChatOutput| {
-            co.finish_reason.as_deref() == Some("length")
-        };
-        let reported_tokens = |co: &crate::ai::ChatOutput| {
-            co.usage.as_ref().and_then(|u| u.completion_tokens)
-        };
+        let finish_reason_len =
+            |co: &crate::ai::ChatOutput| co.finish_reason.as_deref() == Some("length");
+        let reported_tokens =
+            |co: &crate::ai::ChatOutput| co.usage.as_ref().and_then(|u| u.completion_tokens);
 
         let mut chat_output = self.ai.chat(&system, &user).await?;
         let mut output_tokens_reported = reported_tokens(&chat_output);
@@ -543,7 +558,8 @@ impl ReviewEngine {
         diff_svc: &DiffService,
     ) -> (usize, usize, usize, usize, usize, String, usize) {
         // Parse + filter
-        let (files_changed, filtered) = diff_svc.parse_and_filter(raw_diff)
+        let (files_changed, filtered) = diff_svc
+            .parse_and_filter(raw_diff)
             .unwrap_or_else(|_| (0, vec![]));
         let files_skipped = files_changed.saturating_sub(filtered.len());
 
@@ -552,8 +568,13 @@ impl ReviewEngine {
         let after_path_filter: Vec<_> = if path_filter.is_empty() {
             filtered
         } else {
-            filtered.into_iter()
-                .filter(|f| path_filter.iter().any(|p| !p.is_empty() && f.filename.starts_with(p)))
+            filtered
+                .into_iter()
+                .filter(|f| {
+                    path_filter
+                        .iter()
+                        .any(|p| !p.is_empty() && f.filename.starts_with(p))
+                })
                 .collect()
         };
         let files_path_filtered = pre_path.saturating_sub(after_path_filter.len());
@@ -564,7 +585,11 @@ impl ReviewEngine {
         let overhead = PROMPT_OVERHEAD_BASELINE
             + PROMPT_OVERHEAD_PER_FILE * budgeted.len()
             + system_overhead
-            + if extra.is_empty() { 0 } else { estimate_tokens(extra) + 10 };
+            + if extra.is_empty() {
+                0
+            } else {
+                estimate_tokens(extra) + 10
+            };
         let effective_budget = diff_svc.max_tokens().saturating_sub(overhead);
         let files_budget_dropped = diff_svc.truncate_to_budget(&mut budgeted, effective_budget);
 
@@ -572,8 +597,15 @@ impl ReviewEngine {
         let user = pb.user_prompt(ctx, &budgeted, extra);
         let input_tokens_estimated = estimate_tokens(&user);
 
-        (files_changed, files_reviewed, files_skipped, files_path_filtered,
-         files_budget_dropped, user, input_tokens_estimated)
+        (
+            files_changed,
+            files_reviewed,
+            files_skipped,
+            files_path_filtered,
+            files_budget_dropped,
+            user,
+            input_tokens_estimated,
+        )
     }
 
     /// Build the user prompt from file content, applying filters and budget.
@@ -592,8 +624,13 @@ impl ReviewEngine {
         let after_path_filter: Vec<_> = if path_filter.is_empty() {
             file_contents.to_vec()
         } else {
-            file_contents.iter()
-                .filter(|f| path_filter.iter().any(|p| !p.is_empty() && f.path.starts_with(p)))
+            file_contents
+                .iter()
+                .filter(|f| {
+                    path_filter
+                        .iter()
+                        .any(|p| !p.is_empty() && f.path.starts_with(p))
+                })
                 .cloned()
                 .collect()
         };
@@ -606,15 +643,27 @@ impl ReviewEngine {
         let overhead = PROMPT_OVERHEAD_BASELINE
             + PROMPT_OVERHEAD_PER_FILE * budgeted.len()
             + system_overhead
-            + if extra.is_empty() { 0 } else { estimate_tokens(extra) + 10 };
+            + if extra.is_empty() {
+                0
+            } else {
+                estimate_tokens(extra) + 10
+            };
         let effective_budget = max_tokens.saturating_sub(overhead);
-        let files_budget_dropped = file_reader::truncate_file_content_budget(&mut budgeted, effective_budget);
+        let files_budget_dropped =
+            file_reader::truncate_file_content_budget(&mut budgeted, effective_budget);
 
         let files_reviewed = budgeted.len();
         let user = pb.user_prompt_for_files(ctx, &budgeted, extra);
         let input_tokens_estimated = estimate_tokens(&user);
 
-        (files_changed, files_reviewed, files_skipped, files_path_filtered,
-         files_budget_dropped, user, input_tokens_estimated)
+        (
+            files_changed,
+            files_reviewed,
+            files_skipped,
+            files_path_filtered,
+            files_budget_dropped,
+            user,
+            input_tokens_estimated,
+        )
     }
 }

@@ -54,10 +54,7 @@ impl GitHost {
             }
             GitHost::GitLab => {
                 // /owner/repo/-/merge_requests/N
-                if segments.len() >= 5
-                    && segments[2] == "-"
-                    && segments[3] == "merge_requests"
-                {
+                if segments.len() >= 5 && segments[2] == "-" && segments[3] == "merge_requests" {
                     Some(4)
                 } else {
                     None

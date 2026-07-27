@@ -322,8 +322,14 @@ mod tests {
         // AI_API_KEY is NOT required at startup — the MCP server must start
         // without credentials. The key is checked at call time by AiClient.
         let s = Settings::default();
-        assert!(s.ai.api_key.inner().is_empty(), "api key should be empty by default");
-        assert!(s.validate().is_ok(), "validate should pass without AI key for MCP compatibility");
+        assert!(
+            s.ai.api_key.inner().is_empty(),
+            "api key should be empty by default"
+        );
+        assert!(
+            s.validate().is_ok(),
+            "validate should pass without AI key for MCP compatibility"
+        );
     }
 
     #[test]

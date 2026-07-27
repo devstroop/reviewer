@@ -48,12 +48,13 @@ impl PromptBuilder {
     /// Loads prompt files from `prompts/{domain}/` at runtime.
     /// Falls back through: `{domain}` → `code` → compiled default.
     pub(crate) fn new(domain: &str) -> Self {
-        let system_prompt = Self::load_prompt(domain, "system.txt")
-            .unwrap_or_else(|| Self::load_prompt("code", "system.txt")
-                .unwrap_or_else(|| CODE_SYSTEM_FALLBACK.to_string()));
-        let user_template = Self::load_prompt(domain, "user.txt")
-            .unwrap_or_else(|| Self::load_prompt("code", "user.txt")
-                .unwrap_or_else(|| CODE_USER_FALLBACK.to_string()));
+        let system_prompt = Self::load_prompt(domain, "system.txt").unwrap_or_else(|| {
+            Self::load_prompt("code", "system.txt")
+                .unwrap_or_else(|| CODE_SYSTEM_FALLBACK.to_string())
+        });
+        let user_template = Self::load_prompt(domain, "user.txt").unwrap_or_else(|| {
+            Self::load_prompt("code", "user.txt").unwrap_or_else(|| CODE_USER_FALLBACK.to_string())
+        });
         Self {
             domain: domain.to_string(),
             system_prompt,
@@ -68,7 +69,9 @@ impl PromptBuilder {
             || domain.contains('/')
             || domain.contains('\\')
             || domain.contains("..")
-            || !domain.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+            || !domain
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
         {
             return None;
         }
@@ -99,10 +102,7 @@ impl PromptBuilder {
         let total_files = files.len();
 
         let pr_metadata = self.pr_metadata_section(ctx, &language);
-        let content_format = format!(
-            "### Diff\n\n```\n{}\n```",
-            diff_context
-        );
+        let content_format = format!("### Diff\n\n```\n{}\n```", diff_context);
         let extra_section = if extra.is_empty() {
             String::new()
         } else {
@@ -136,17 +136,18 @@ impl PromptBuilder {
             hint.to_string()
         } else {
             let detected = Self::detect_primary_from_files(files);
-            if detected != "Unknown" { detected } else { "Unknown".to_string() }
+            if detected != "Unknown" {
+                detected
+            } else {
+                "Unknown".to_string()
+            }
         };
         let file_list = self.format_file_list_from_files(files);
         let file_context = format_file_context(files);
         let total_files = files.len();
 
         let pr_metadata = self.pr_metadata_section(ctx, &language);
-        let content_format = format!(
-            "### File Contents\n\n{}",
-            file_context
-        );
+        let content_format = format!("### File Contents\n\n{}", file_context);
         let extra_section = if extra.is_empty() {
             String::new()
         } else {
@@ -252,7 +253,10 @@ impl PromptBuilder {
     fn format_file_list_from_files(&self, files: &[FileContent]) -> String {
         let mut out = String::new();
         for f in files {
-            out.push_str(&format!("- `{}` ({} — {} lines)\n", f.path, f.language, f.line_count));
+            out.push_str(&format!(
+                "- `{}` ({} — {} lines)\n",
+                f.path, f.language, f.line_count
+            ));
         }
         if out.is_empty() {
             out.push_str("- (no files)");
@@ -362,5 +366,4 @@ mod tests {
         let builder = PromptBuilder::new("code");
         assert_eq!(builder.format_file_list(&[]), "- (no reviewable files)");
     }
-
 }

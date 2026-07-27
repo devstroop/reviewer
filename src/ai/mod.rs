@@ -60,7 +60,8 @@ impl AiClient {
 
     /// Send a chat completion request with the configured max_tokens.
     pub async fn chat(&self, system: &str, user: &str) -> Result<ChatOutput> {
-        self.chat_inner(system, user, self.max_completion_tokens).await
+        self.chat_inner(system, user, self.max_completion_tokens)
+            .await
     }
 
     /// Send a chat completion request with an explicit max_tokens limit.
@@ -74,12 +75,7 @@ impl AiClient {
     }
 
     /// Shared implementation for all chat variants.
-    async fn chat_inner(
-        &self,
-        system: &str,
-        user: &str,
-        max_tokens: u32,
-    ) -> Result<ChatOutput> {
+    async fn chat_inner(&self, system: &str, user: &str, max_tokens: u32) -> Result<ChatOutput> {
         let url = format!("{}/chat/completions", self.api_base.trim_end_matches('/'));
 
         let request = ChatRequest {
