@@ -7,7 +7,7 @@ use std::fmt;
 ///
 /// # Example
 /// ```
-/// use review_agent::sensitive::Sensitive;
+/// use reviewer::sensitive::Sensitive;
 ///
 /// let key = Sensitive::new("sk-abc123");
 /// assert_eq!(format!("{}", key), "***");

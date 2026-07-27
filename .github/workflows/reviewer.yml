@@ -1,11 +1,11 @@
-# In the review-agent repo itself, the local `uses: ./` strategy
+# In the reviewer repo itself, the local `uses: ./` strategy
 # applies (builds the Dockerfile from the checked-out source) with inputs
 # matching action.yml. AI_API_BASE and MODEL defaults are set here so the
 # workflow can override them per-job; action.yml provides its own defaults
 # as fallback for consumers who omit them.
 #
 # Usage when consuming from another repo:
-#   - uses: devstroop/review-agent@v0.1.0
+#   - uses: devstroop/reviewer@v0.1.0
 #     with:
 #       github_token: ${{ secrets.GITHUB_TOKEN }}
 #       ai_api_key: ${{ secrets.AI_API_KEY }}
@@ -31,7 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run review-agent
+      - name: Run reviewer
         uses: ./
         with:
           # pr_url construction assumes a pull_request event (the trigger above

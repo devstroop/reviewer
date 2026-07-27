@@ -2,7 +2,7 @@
 
 ## Threat Model
 
-review-agent is a tool that reads private repository code and sends it to a third-party AI provider for analysis. The following threats are explicitly considered:
+reviewer is a tool that reads private repository code and sends it to a third-party AI provider for analysis. The following threats are explicitly considered:
 
 ### Prompt Injection
 A malicious PR diff could attempt to instruct the AI to produce hostile output, leak system prompts, or exfiltrate data.
@@ -23,7 +23,7 @@ API keys, tokens, and private diffs must never appear in logs or AI responses.
 - The binary redacts all secrets before any serialization for output
 
 ### Token Scope Abuse
-The GitHub token used by review-agent has specific permissions that should not be exceeded.
+The GitHub token used by reviewer has specific permissions that should not be exceeded.
 
 **Minimum required scopes:**
 - `contents: read` — read PR files and metadata
@@ -36,8 +36,8 @@ permissions:
   pull-requests: write
 ```
 
-**Do not use a token with the `repo` scope** — it grants broad access beyond what review-agent needs.
+**Do not use a token with the `repo` scope** — it grants broad access beyond what reviewer needs.
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in review-agent, please open a GitHub Issue with the label `security`. Do not disclose the vulnerability publicly until it has been addressed.
+If you discover a security vulnerability in reviewer, please open a GitHub Issue with the label `security`. Do not disclose the vulnerability publicly until it has been addressed.

@@ -14,7 +14,7 @@ use std::time::Instant;
 /// ⚠️ **Deprecated** — use [`ReviewResult`](crate::engine::ReviewResult) instead.
 /// This type exists only for backward compatibility with existing callers
 /// (CLI, webhook server, integration tests). New code should use
-/// `review_agent::engine::ReviewResult` directly.
+/// `reviewer::engine::ReviewResult` directly.
 ///
 /// **Token-counting note:** `total_tokens_used` here uses the original
 /// formula (`input_tokens_estimated + output_tokens_reported`) to preserve

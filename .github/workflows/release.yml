@@ -1,4 +1,4 @@
-# Publishes a review-agent Docker image to GitHub Container Registry (GHCR),
+# Publishes a reviewer Docker image to GitHub Container Registry (GHCR),
 # builds release binaries, and creates a GitHub Release when a tag matching
 # `v*` is pushed.
 name: Release
@@ -21,11 +21,11 @@ jobs:
         include:
           - name: Linux (x86_64)
             runner: ubuntu-24.04
-            artifact: review-agent-linux-x86_64
+            artifact: reviewer-linux-x86_64
             target: x86_64-unknown-linux-gnu
           - name: macOS (arm64)
             runner: macos-15
-            artifact: review-agent-macos-arm64
+            artifact: reviewer-macos-arm64
             target: aarch64-apple-darwin
 
     steps:
@@ -48,7 +48,7 @@ jobs:
         run: |
           set -eu
           mkdir -p staging
-          cp target/${{ matrix.target }}/release/review-agent staging/
+          cp target/${{ matrix.target }}/release/reviewer staging/
           cp action.yml staging/
           cp README.md staging/
           echo "${{ github.ref_name }}" > staging/VERSION

@@ -1,4 +1,4 @@
-//! Unified error types for all review-agent operations.
+//! Unified error types for all reviewer operations.
 //!
 //! [`AgentError`] is the single error enum used across every module. Each
 //! variant carries a human-readable message via `thiserror`. The

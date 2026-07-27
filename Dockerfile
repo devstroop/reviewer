@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# review-agent — multi-stage Docker build
+# reviewer — multi-stage Docker build
 #
 # Stage 1: Build a statically-linked binary via musl (no glibc dependency).
 # Stage 2: Copy into distroless/static (~20 MB final image).
@@ -35,7 +35,7 @@ RUN cargo build --release --target x86_64-unknown-linux-musl
 # ── Runtime ──────────────────────────────────────────────────────────────────
 FROM gcr.io/distroless/static:nonroot
 
-COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/review-agent /review-agent
+COPY --from=builder /app/target/x86_64-unknown-linux-musl/release/reviewer /reviewer
 
 USER nonroot:nonroot
-ENTRYPOINT ["/review-agent"]
+ENTRYPOINT ["/reviewer"]

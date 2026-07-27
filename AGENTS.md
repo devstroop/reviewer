@@ -1,4 +1,4 @@
-# AGENTS.md — review-agent
+# AGENTS.md — reviewer
 
 Single-binary Rust CLI that reviews GitHub PRs via any OpenAI-compatible endpoint. Runs as a Docker-based GitHub Action on `gcr.io/distroless/static` (~20 MB image).
 
@@ -24,12 +24,12 @@ action.yml       — GitHub Action metadata (Docker strategy) (done)
 
 - **Errors**: `AgentError` enum with `?` propagation. Add variants as needed.
 - **Secrets**: `Sensitive<T>` wrapper — Display/Debug show `"***"`. All keys/tokens use it.
-- **Config**: `$GITHUB_WORKSPACE/.github/review-agent.toml` → CWD → `~/.config/` → defaults. Env vars override.
+- **Config**: `$GITHUB_WORKSPACE/.github/reviewer.toml` → CWD → `~/.config/` → defaults. Env vars override.
 - **Event filtering**: Action no-ops unless event is `opened`, `synchronize`, or `reopened`. Draft PRs and bot senders are skipped (ADR-019).
 - **Diff source**: Fetched via `Accept: application/vnd.github.v3.diff` header, guaranteeing standard unified diff format (ADR-005).
 - **GitHub rate limiting**: Semaphore(10) + `governor` (100 req/min). AI retry via `backoff` (exp+jitter, 3 retries, 429/5xx only).
 - **Token budget**: 3.5 chars/token heuristic overestimates tokens, acting as a conservative safety cap (ADR-006).
-- **HTTP**: single `reqwest::Client` with rustls-tls. Headers: `User-Agent: review-agent`, `Accept: application/vnd.github.v3.diff`.
+- **HTTP**: single `reqwest::Client` with rustls-tls. Headers: `User-Agent: reviewer`, `Accept: application/vnd.github.v3.diff`.
 - **Logging**: `tracing` — JSON when `LOG_FORMAT=json`. Secrets redacted at type level.
 - **Tests**: `wiremock` for HTTP mocking. No network in CI.
 - **Docker**: Static link via `x86_64-unknown-linux-musl` target, `gcr.io/distroless/static` base image (ADR-018).

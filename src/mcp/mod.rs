@@ -20,7 +20,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 const MAX_LINE_LENGTH: usize = 1 << 20; // 1 MiB
 
 pub async fn run(settings: &Settings) -> Result<()> {
-    eprintln!("[mcp] Starting review-agent MCP server");
+    eprintln!("[mcp] Starting reviewer MCP server");
 
     let engine = match ReviewEngine::new(settings) {
         Ok(e) => e,
@@ -201,7 +201,7 @@ fn handle_initialize(params: Option<&Value>) -> std::result::Result<Value, (i32,
             return Err((
                 INVALID_REQUEST,
                 format!(
-                    "Unsupported protocol version '{client_version}': review-agent supports 2024-xx-xx"
+                    "Unsupported protocol version '{client_version}': reviewer supports 2024-xx-xx"
                 ),
             ));
         }
@@ -210,7 +210,7 @@ fn handle_initialize(params: Option<&Value>) -> std::result::Result<Value, (i32,
     let value = serde_json::to_value(InitializeResult {
         protocol_version: "2024-11-05".into(),
         server_info: ServerInfo {
-            name: "review-agent".into(),
+            name: "reviewer".into(),
             version: env!("CARGO_PKG_VERSION").into(),
         },
         capabilities: McpCapabilities {

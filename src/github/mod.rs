@@ -133,8 +133,8 @@ mod parse_pr_url_tests {
     #[test]
     fn parse_valid_pr_url() {
         assert_eq!(
-            parse_pr_url("https://github.com/devstroop/review-agent/pull/42").unwrap(),
-            ("devstroop".into(), "review-agent".into(), 42)
+            parse_pr_url("https://github.com/devstroop/reviewer/pull/42").unwrap(),
+            ("devstroop".into(), "reviewer".into(), 42)
         );
     }
 
@@ -155,7 +155,7 @@ mod parse_pr_url_tests {
 
     #[test]
     fn parse_invalid_pr_url() {
-        assert!(parse_pr_url("https://github.com/devstroop/review-agent").is_err());
+        assert!(parse_pr_url("https://github.com/devstroop/reviewer").is_err());
         assert!(parse_pr_url("not-a-url").is_err());
         assert!(parse_pr_url("https://github.com/o/r/pull/abc").is_err());
     }
@@ -258,7 +258,7 @@ impl GitHub {
         let token = settings.github.token.clone();
 
         let mut headers = HeaderMap::new();
-        headers.insert(USER_AGENT, HeaderValue::from_static("review-agent/0.1.0"));
+        headers.insert(USER_AGENT, HeaderValue::from_static("reviewer/0.1.0"));
         headers.insert(
             ACCEPT,
             HeaderValue::from_static("application/vnd.github.v3+json"),

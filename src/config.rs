@@ -1,10 +1,10 @@
 //! Configuration loading: TOML file search, env var overlay, and validation.
 //!
 //! Config search order (first file found wins, then env vars override):
-//!   1. `$GITHUB_WORKSPACE/.github/review-agent.toml` (GitHub Action context)
-//!   2. `$CWD/review-agent.toml`
-//!   3. `$CWD/.review-agent.toml`
-//!   4. `~/.config/review-agent/config.toml`
+//!   1. `$GITHUB_WORKSPACE/.github/reviewer.toml` (GitHub Action context)
+//!   2. `$CWD/reviewer.toml`
+//!   3. `$CWD/.reviewer.toml`
+//!   4. `~/.config/reviewer/config.toml`
 //!   5. Built-in defaults (no file needed)
 //!
 //! Secrets (API keys, tokens) use [`Sensitive<T>`] to prevent accidental
@@ -36,10 +36,10 @@ impl Settings {
     /// Load configuration from TOML file, then overlay env vars.
     ///
     /// Config search order (first found wins):
-    ///   1. `$GITHUB_WORKSPACE/.github/review-agent.toml` (GitHub Action)
-    ///   2. `$CWD/review-agent.toml`
-    ///   3. `$CWD/.review-agent.toml`
-    ///   4. `~/.config/review-agent/config.toml`
+    ///   1. `$GITHUB_WORKSPACE/.github/reviewer.toml` (GitHub Action)
+    ///   2. `$CWD/reviewer.toml`
+    ///   3. `$CWD/.reviewer.toml`
+    ///   4. `~/.config/reviewer/config.toml`
     ///   5. Built-in defaults
     ///
     /// Env vars take precedence over file values.
@@ -105,16 +105,16 @@ impl Settings {
         if let Ok(workspace) = std::env::var("GITHUB_WORKSPACE") {
             candidates.push(
                 PathBuf::from(workspace)
-                    .join(".github/review-agent.toml")
+                    .join(".github/reviewer.toml")
                     .to_string_lossy()
                     .to_string(),
             );
         }
 
         // 2-4. Standard paths
-        candidates.push("review-agent.toml".into());
-        candidates.push(".review-agent.toml".into());
-        candidates.push("~/.config/review-agent/config.toml".into());
+        candidates.push("reviewer.toml".into());
+        candidates.push(".reviewer.toml".into());
+        candidates.push("~/.config/reviewer/config.toml".into());
 
         for raw in &candidates {
             let expanded = shellexpand::tilde(raw).to_string();

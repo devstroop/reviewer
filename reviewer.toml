@@ -6,10 +6,10 @@
 #   GITHUB_TOKEN → github.token
 #
 # Config search order:
-#   1. $GITHUB_WORKSPACE/.github/review-agent.toml
-#   2. $CWD/review-agent.toml
-#   3. $CWD/.review-agent.toml
-#   4. ~/.config/review-agent/config.toml
+#   1. $GITHUB_WORKSPACE/.github/reviewer.toml
+#   2. $CWD/reviewer.toml
+#   3. $CWD/.reviewer.toml
+#   4. ~/.config/reviewer/config.toml
 #   5. Built-in defaults
 
 [ai]

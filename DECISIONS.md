@@ -1,6 +1,6 @@
 # Architecture Decision Records
 
-This file captures every significant decision made during review-agent's design and implementation. If an AI agent or contributor loses session context, this file should be enough to reconstruct the full rationale.
+This file captures every significant decision made during reviewer's design and implementation. If an AI agent or contributor loses session context, this file should be enough to reconstruct the full rationale.
 
 ---
 
@@ -64,7 +64,7 @@ This file captures every significant decision made during review-agent's design 
 
 **Context:** PR-Agent uses Dynaconf, which has complex chained-loading semantics, env var prefix configuration, and surprising nested-key behavior. It caused real debugging pain during testing.
 
-**Decision:** Use `toml` crate for file deserialization + manual `std::env::var` overlay. Config search: `$GITHUB_WORKSPACE/.github/review-agent.toml` → `$CWD/review-agent.toml` → `$CWD/.review-agent.toml` → `~/.config/review-agent/config.toml` → built-in defaults.
+**Decision:** Use `toml` crate for file deserialization + manual `std::env::var` overlay. Config search: `$GITHUB_WORKSPACE/.github/reviewer.toml` → `$CWD/reviewer.toml` → `$CWD/.reviewer.toml` → `~/.config/reviewer/config.toml` → built-in defaults.
 
 **Consequences:**
 - + No external config framework dependency
@@ -414,7 +414,7 @@ All 23 ADRs are implemented in the current codebase. Key implementation files:
 | 007 (Sensitive\<T\>) | `sensitive.rs` | `Sensitive<T>` wrapper |
 | 008 (Semaphore + governor) | `github/mod.rs` | `GitHub::new()` |
 | 009 (90s AI timeout) | `ai/mod.rs` | `AiClient::chat()` |
-| 010 (Bot detection) | `.github/workflows/review-agent.yml` | `sender.type != 'Bot'` |
+| 010 (Bot detection) | `.github/workflows/reviewer.yml` | `sender.type != 'Bot'` |
 | 011 (Full PR diff) | `tools/review.rs` | Cumulative `get_pr_diff()` |
 | 012 (File skip-list) | `diff.rs` | `filter_files()` |
 | 013 (MSRV 1.85, edition 2024) | `Cargo.toml` | `rust-version = "1.85"` |

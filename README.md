@@ -1,4 +1,4 @@
-# review-agent
+# reviewer
 
 AI-powered PR review agent — a single-binary Rust CLI that reviews GitHub Pull Requests using any OpenAI-compatible AI endpoint. Deployable as a Docker-based GitHub Action.
 
@@ -11,7 +11,7 @@ AI-powered PR review agent — a single-binary Rust CLI that reviews GitHub Pull
 ### As a GitHub Action
 
 ```yaml
-# .github/workflows/review-agent.yml
+# .github/workflows/reviewer.yml
 name: Review Agent
 on:
   pull_request:
@@ -25,8 +25,8 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - name: Run review-agent
-        uses: devstroop/review-agent@v0.1.0
+      - name: Run reviewer
+        uses: devstroop/reviewer@v0.1.0
         with:
           pr_url: ${{ format('https://github.com/{0}/{1}/pull/{2}', github.repository_owner, github.event.repository.name, github.event.pull_request.number) }}
           ai_api_key: ${{ secrets.AI_API_KEY }}
@@ -50,17 +50,17 @@ export AI_API_KEY=sk-...
 cargo run -- review --pr-url https://github.com/owner/repo/pull/1
 ```
 
-You can also create a `review-agent.toml` config file instead of env vars — see [Configuration](#configuration).
+You can also create a `reviewer.toml` config file instead of env vars — see [Configuration](#configuration).
 
 ---
 
 ## Configuration
 
 Config is loaded from the first file found in this order:
-1. `$GITHUB_WORKSPACE/.github/review-agent.toml` (GitHub Action)
-2. `$CWD/review-agent.toml`
-3. `$CWD/.review-agent.toml`
-4. `~/.config/review-agent/config.toml`
+1. `$GITHUB_WORKSPACE/.github/reviewer.toml` (GitHub Action)
+2. `$CWD/reviewer.toml`
+3. `$CWD/.reviewer.toml`
+4. `~/.config/reviewer/config.toml`
 5. Built-in defaults
 
 Environment variables override file values.
@@ -106,7 +106,7 @@ extra_instructions = ""                      # Extra prompt instructions
 
 ## GitHub Token Guide
 
-review-agent uses the GitHub token for two things:
+reviewer uses the GitHub token for two things:
 1. **Reading PR diffs and metadata** — requires `contents: read`
 2. **Posting reviews and comments** — requires `pull-requests: write`
 
@@ -217,7 +217,7 @@ See `CONTRIBUTING.md` for detailed development guidelines.
 
 ## Comparison with PR-Agent
 
-| Feature | review-agent | PR-Agent |
+| Feature | reviewer | PR-Agent |
 |---|---|---|
 | Written in | Rust (single binary) | Python |
 | Dependencies | ~15 crates, static-linked | 30+ Python packages |

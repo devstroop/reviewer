@@ -1,10 +1,10 @@
-# review-agent — GitHub Action
+# reviewer — GitHub Action
 #
-# Runs the review-agent binary inside a Docker container built from the
+# Runs the reviewer binary inside a Docker container built from the
 # repo's Dockerfile (multi-stage, distroless/static base).
 #
 # Usage:
-#   - uses: devstroop/review-agent@v0.1.0
+#   - uses: devstroop/reviewer@v0.1.0
 #     with:
 #       github_token: ${{ secrets.GITHUB_TOKEN }}
 #       ai_api_key: ${{ secrets.AI_API_KEY }}
@@ -12,7 +12,7 @@
 #       AI_API_BASE: ${{ secrets.AI_API_BASE }}
 #       MODEL: ${{ secrets.MODEL }}
 
-name: 'review-agent'
+name: 'reviewer'
 description: 'AI-powered PR review agent — analyzes pull requests using any OpenAI-compatible endpoint'
 author: 'devstroop'
 branding:

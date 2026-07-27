@@ -67,7 +67,7 @@ src/
 2. Ensure `cargo test` passes and `cargo clippy -- -D warnings` is clean
 3. Ensure `cargo fmt --check` passes
 4. Update documentation (README, AGENTS.md) for any new features
-5. For config changes, update `review-agent.toml` and the README config reference
+5. For config changes, update `reviewer.toml` and the README config reference
 6. Open a PR against `master` with a clear description of the change
 
 ## Security

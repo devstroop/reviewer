@@ -1,10 +1,10 @@
 use clap::{Parser, Subcommand};
-use review_agent::github::parse_pr_url;
-use review_agent::logging;
-use review_agent::tools::review::ReviewTool;
+use reviewer::github::parse_pr_url;
+use reviewer::logging;
+use reviewer::tools::review::ReviewTool;
 
 #[derive(Parser)]
-#[command(name = "review-agent", version, about = "AI-powered PR review agent")]
+#[command(name = "reviewer", version, about = "AI-powered PR review agent")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -44,7 +44,7 @@ async fn main() -> anyhow::Result<()> {
         #[allow(deprecated)]
         Command::Review { pr_url } => {
             tracing::info!(pr_url, "Review command");
-            let settings = review_agent::Settings::load()?;
+            let settings = reviewer::Settings::load()?;
             tracing::info!(
                 api_base = %settings.ai.api_base,
                 model = %settings.ai.model,
@@ -193,14 +193,14 @@ async fn main() -> anyhow::Result<()> {
         Command::Serve { port, .. } => {
             tracing::info!(port, "Starting webhook server");
 
-            let settings = review_agent::Settings::load()?;
+            let settings = reviewer::Settings::load()?;
             tracing::info!(
                 api_base = %settings.ai.api_base,
                 model = %settings.ai.model,
                 "Settings loaded"
             );
 
-            let app = review_agent::server::router(settings);
+            let app = reviewer::server::router(settings);
             let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port))
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to bind port {}: {}", port, e))?;
@@ -214,8 +214,8 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Mcp => {
             tracing::info!("Starting MCP stdio server");
-            let settings = review_agent::Settings::load()?;
-            review_agent::mcp::run(&settings).await?;
+            let settings = reviewer::Settings::load()?;
+            reviewer::mcp::run(&settings).await?;
         }
     }
 
@@ -240,7 +240,7 @@ fn is_safe_summary_path(canonical: &std::path::Path) -> bool {
 #[allow(deprecated)]
 fn write_step_summary(
     f: &mut std::fs::File,
-    output: &review_agent::tools::review::ReviewOutput,
+    output: &reviewer::tools::review::ReviewOutput,
 ) -> anyhow::Result<()> {
     use std::io::Write;
     // Escape a value for safe inclusion in a markdown table cell.
