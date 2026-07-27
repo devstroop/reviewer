@@ -86,21 +86,21 @@ impl Settings {
     ///
     /// Call this as the last step of `load()` so the error message is actionable.
     pub fn validate(&self) -> Result<()> {
-        if self.ai.api_key.inner().is_empty() {
-            return Err(AgentError::Config(
-                "AI_API_KEY is required — set via AI_API_KEY env var or config file".into(),
-            ));
-        }
+        // Note: AI_API_KEY is NOT validated here. The MCP server must be able
+        // to start without credentials (tools/list, initialize, etc.). The
+        // key is only required when a review tool is actually called, and
+        // AiClient::chat() will return an auth error at that point.
         if self.ai.api_base.is_empty() {
             return Err(AgentError::Config(
                 "AI_API_BASE must be a non-empty URL".into(),
             ));
         }
         if url::Url::parse(&self.ai.api_base).is_err()
-            || !self.ai.api_base.starts_with("https://")
+            || !(self.ai.api_base.starts_with("http://")
+                || self.ai.api_base.starts_with("https://"))
         {
             return Err(AgentError::Config(format!(
-                "AI_API_BASE must be a valid https URL, got '{}'",
+                "AI_API_BASE must be a valid http(s) URL, got '{}'",
                 self.ai.api_base
             )));
         }
@@ -318,11 +318,12 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_without_ai_key() {
+    fn validate_passes_without_ai_key() {
+        // AI_API_KEY is NOT required at startup — the MCP server must start
+        // without credentials. The key is checked at call time by AiClient.
         let s = Settings::default();
         assert!(s.ai.api_key.inner().is_empty(), "api key should be empty by default");
-        let err = s.validate().unwrap_err();
-        assert!(err.to_string().contains("AI_API_KEY"), "should reject missing key: {:?}", err);
+        assert!(s.validate().is_ok(), "validate should pass without AI key for MCP compatibility");
     }
 
     #[test]
