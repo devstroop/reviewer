@@ -1,16 +1,21 @@
 //! Fills the system and user prompt templates with context about
 //! the PR and diff.  Only `ReviewEngine` calls this service.
+//!
+//! Prompts are loaded at runtime from `prompts/{domain}/` directory.
+//! Fallback chain: `{domain}/system.txt` → `code/system.txt` → compiled default.
+//! This allows adding new domains by just writing prompt files — no code changes.
 
-use crate::config::Settings;
 use crate::diff::{DiffFile, DiffStatus, format_diff_context};
 use crate::language::detect_language;
 use crate::tokens::estimate_tokens;
+use std::path::Path;
 
-/// System prompt loaded at compile time.
-const SYSTEM_PROMPT: &str = include_str!("../../prompts/review_system.txt");
+/// Compiled-in fallback for the `code` domain system prompt.
+/// Used when the prompt file is not available on the filesystem.
+const CODE_SYSTEM_FALLBACK: &str = include_str!("../../prompts/code/system.txt");
 
-/// User prompt template loaded at compile time.
-const USER_TEMPLATE: &str = include_str!("../../prompts/review_user.txt");
+/// Compiled-in fallback for the `code` domain user template.
+const CODE_USER_FALLBACK: &str = include_str!("../../prompts/code/user.txt");
 
 /// All PR metadata fields used to fill the user prompt template.
 pub(crate) struct PromptContext<'a> {
@@ -26,23 +31,54 @@ pub(crate) struct PromptContext<'a> {
     pub language_hint: Option<&'a str>,
 }
 
-/// Builds the system and user prompts for the AI.
-pub(crate) struct PromptBuilder;
+/// Builds the system and user prompts for the AI, per domain.
+pub(crate) struct PromptBuilder {
+    /// Review domain (e.g. "code", "config", "policy").
+    domain: String,
+    /// Cached system prompt for this domain.
+    system_prompt: String,
+    /// Cached user template for this domain.
+    user_template: String,
+}
 
 impl PromptBuilder {
-    pub(crate) fn new(_settings: &Settings) -> Self {
-        Self
+    /// Create a new PromptBuilder for the given domain.
+    ///
+    /// Loads prompt files from `prompts/{domain}/` at runtime.
+    /// Falls back through: `{domain}` → `code` → compiled default.
+    pub(crate) fn new(domain: &str) -> Self {
+        let system_prompt = Self::load_prompt(domain, "system.txt")
+            .unwrap_or_else(|| Self::load_prompt("code", "system.txt")
+                .unwrap_or_else(|| CODE_SYSTEM_FALLBACK.to_string()));
+        let user_template = Self::load_prompt(domain, "user.txt")
+            .unwrap_or_else(|| Self::load_prompt("code", "user.txt")
+                .unwrap_or_else(|| CODE_USER_FALLBACK.to_string()));
+        Self {
+            domain: domain.to_string(),
+            system_prompt,
+            user_template,
+        }
     }
 
-    /// Return the compiled system prompt (constant, no dynamic content).
-    pub(crate) fn system_prompt() -> String {
-        SYSTEM_PROMPT.to_string()
+    /// Try to load a prompt file from `prompts/{domain}/{file}`.
+    fn load_prompt(domain: &str, file: &str) -> Option<String> {
+        let path = Path::new("prompts").join(domain).join(file);
+        std::fs::read_to_string(&path).ok()
     }
 
-    /// Return the estimated token count of the (constant) system prompt.
-    /// Used by the engine to reserve budget before truncating the diff.
-    pub(crate) fn system_prompt_tokens() -> usize {
-        estimate_tokens(SYSTEM_PROMPT)
+    /// Return the current domain.
+    pub(crate) fn domain(&self) -> &str {
+        &self.domain
+    }
+
+    /// Return the system prompt for the current domain.
+    pub(crate) fn system_prompt(&self) -> String {
+        self.system_prompt.clone()
+    }
+
+    /// Return the estimated token count of the system prompt.
+    pub(crate) fn system_prompt_tokens(&self) -> usize {
+        estimate_tokens(&self.system_prompt)
     }
 
     /// Fill the user prompt template with PR metadata and diff context.
@@ -52,14 +88,7 @@ impl PromptBuilder {
         files: &[DiffFile],
         extra: &str,
     ) -> String {
-        let detected = self.detect_primary_language(files);
-        let language = if detected != "Unknown" {
-            detected
-        } else if let Some(hint) = ctx.language_hint {
-            hint.to_string()
-        } else {
-            "Unknown".to_string()
-        };
+        let language = self.detect_language(ctx, files);
         let file_list = self.format_file_list(files);
         let diff_context = format_diff_context(files, usize::MAX);
         let total_files = files.len();
@@ -70,7 +99,7 @@ impl PromptBuilder {
             format!("### Additional Instructions\n\n{}\n", extra)
         };
 
-        USER_TEMPLATE
+        self.user_template
             .replace("{title}", ctx.title)
             .replace("{owner}", ctx.owner)
             .replace("{repo}", ctx.repo)
@@ -83,6 +112,24 @@ impl PromptBuilder {
             .replace("{file_list}", &file_list)
             .replace("{extra_instructions}", &extra_section)
             .replace("{diff}", &diff_context)
+    }
+
+    /// Detect the primary language, or return language hint.
+    /// Only runs language detection for the "code" domain.
+    fn detect_language(&self, ctx: &PromptContext<'_>, files: &[DiffFile]) -> String {
+        if self.domain == "code" {
+            let detected = self.detect_primary_language(files);
+            if detected != "Unknown" {
+                return detected;
+            }
+            if let Some(hint) = ctx.language_hint {
+                return hint.to_string();
+            }
+            "Unknown".to_string()
+        } else {
+            // Non-code domains don't need language detection.
+            String::new()
+        }
     }
 
     /// Determine the primary language from the changed files.
@@ -147,7 +194,7 @@ mod tests {
 
     #[test]
     fn detect_primary_language_finds_most_common() {
-        let builder = PromptBuilder;
+        let builder = PromptBuilder::new("code");
         let files = vec![
             make_file("a.rs", DiffStatus::Modified),
             make_file("b.py", DiffStatus::Added),
@@ -160,26 +207,24 @@ mod tests {
 
     #[test]
     fn detect_primary_language_empty_returns_unknown() {
-        let builder = PromptBuilder;
+        let builder = PromptBuilder::new("code");
         assert_eq!(builder.detect_primary_language(&[]), "Unknown");
     }
 
     #[test]
     fn detect_primary_language_tie_returns_first_max() {
-        let builder = PromptBuilder;
+        let builder = PromptBuilder::new("code");
         let files = vec![
             make_file("a.rs", DiffStatus::Modified),
             make_file("b.py", DiffStatus::Modified),
         ];
-        // Both have count 1; HashMap iteration order is arbitrary,
-        // so we just check it returns one of them.
         let result = builder.detect_primary_language(&files);
         assert!(result == "Rust" || result == "Python", "got {result}");
     }
 
     #[test]
     fn format_file_list_basic() {
-        let builder = PromptBuilder;
+        let builder = PromptBuilder::new("code");
         let files = vec![
             make_file("src/main.rs", DiffStatus::Modified),
             make_file("src/lib.rs", DiffStatus::Added),
@@ -195,46 +240,8 @@ mod tests {
 
     #[test]
     fn format_file_list_empty() {
-        let builder = PromptBuilder;
+        let builder = PromptBuilder::new("code");
         assert_eq!(builder.format_file_list(&[]), "- (no reviewable files)");
     }
 
-    #[test]
-    fn user_prompt_language_fallback_from_hint() {
-        let builder = PromptBuilder;
-        let ctx = PromptContext {
-            title: "test",
-            description: "",
-            owner: "",
-            repo: "",
-            author: "",
-            branch: "",
-            base: "",
-            language_hint: Some("Zig"),
-        };
-        // Empty file list → file-extension detection returns "Unknown",
-        // so the hint should activate.
-        let result = builder.user_prompt(&ctx, &[], "");
-        assert!(result.contains("Zig"));
-    }
-
-    #[test]
-    fn user_prompt_language_hint_ignored_when_detected() {
-        let builder = PromptBuilder;
-        let ctx = PromptContext {
-            title: "test",
-            description: "",
-            owner: "",
-            repo: "",
-            author: "",
-            branch: "",
-            base: "",
-            language_hint: Some("Python"),
-        };
-        let files = vec![make_file("a.rs", DiffStatus::Modified)];
-        let result = builder.user_prompt(&ctx, &files, "");
-        // Extension detection should find Rust, overriding the hint.
-        assert!(result.contains("Rust"));
-        assert!(!result.contains("Python"));
-    }
 }

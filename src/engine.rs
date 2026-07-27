@@ -151,7 +151,6 @@ pub struct ReviewStats {
 pub struct ReviewEngine {
     github_svc: Option<GithubService>,
     diff_svc: DiffService,
-    prompt_builder: PromptBuilder,
     ai: AiClient,
     /// Extra instructions from settings (merged into every user prompt).
     config_extra: String,
@@ -168,7 +167,6 @@ impl ReviewEngine {
         Ok(Self {
             github_svc,
             diff_svc: DiffService::new(settings),
-            prompt_builder: PromptBuilder::new(settings),
             ai: AiClient::new(settings)?,
             config_extra: settings.review.extra_instructions.clone(),
         })
@@ -292,7 +290,7 @@ impl ReviewEngine {
         // undershooting the budget is safe; overshooting would fail the
         // AI call.
         let mut budgeted = after_path_filter;
-        let system_overhead = PromptBuilder::system_prompt_tokens();
+        let system_overhead = estimate_tokens(include_str!("../prompts/code/system.txt"));
         let overhead = PROMPT_OVERHEAD_BASELINE
             + PROMPT_OVERHEAD_PER_FILE * budgeted.len()
             + system_overhead
@@ -325,8 +323,10 @@ impl ReviewEngine {
             );
         }
 
-        // ── 5. Build prompts ───────────────────────────────────
-        let system = PromptBuilder::system_prompt();
+        // ── 5. Build prompts (per-domain) ─────────────────────
+        let pb = PromptBuilder::new(&resolved.domain);
+        let system = pb.system_prompt();
+        let system_tokens_estimated = pb.system_prompt_tokens();
         let title = resolved.pr_title.as_deref().unwrap_or("(untitled)");
         let description = resolved.description.as_deref().unwrap_or("");
         let owner = resolved.owner.as_deref().unwrap_or("");
@@ -334,7 +334,7 @@ impl ReviewEngine {
         let author = resolved.author.as_deref().unwrap_or("");
         let branch = resolved.branch.as_deref().unwrap_or("");
         let base = resolved.base.as_deref().unwrap_or("");
-        let user = self.prompt_builder.user_prompt(
+        let user = pb.user_prompt(
             &PromptContext {
                 title,
                 description,
@@ -349,7 +349,6 @@ impl ReviewEngine {
             &extra,
         );
         let input_tokens_estimated = crate::tokens::estimate_tokens(&user);
-        let system_tokens_estimated = crate::tokens::estimate_tokens(&system);
 
         // ── 6. AI analysis ─────────────────────────────────────
         let chat_output = self.ai.chat(&system, &user).await?;
@@ -417,7 +416,7 @@ impl ReviewEngine {
                 total_tokens_used,
                 latency_ms,
                 model: self.ai.model_name().to_string(),
-                prompt_version: "1".into(),
+                prompt_version: format!("{}/1", resolved.domain),
                 domain: resolved.domain.clone(),
             },
         })
