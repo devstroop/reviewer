@@ -1,5 +1,6 @@
-# Publishes a review-agent Docker image to GitHub Container Registry (GHCR)
-# and creates a GitHub Release when a tag matching `v*` is pushed.
+# Publishes a review-agent Docker image to GitHub Container Registry (GHCR),
+# builds release binaries, and creates a GitHub Release when a tag matching
+# `v*` is pushed.
 name: Release
 on:
   push:
@@ -11,12 +12,21 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  release:
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-      packages: write
-      id-token: write
+  binary:
+    name: Build binary (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux (x86_64)
+            runner: ubuntu-24.04
+            artifact: review-agent-linux-x86_64
+            target: x86_64-unknown-linux-gnu
+          - name: macOS (arm64)
+            runner: macos-15
+            artifact: review-agent-macos-arm64
+            target: aarch64-apple-darwin
 
     steps:
       - uses: actions/checkout@v4
@@ -24,11 +34,49 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
+          targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
 
       - name: Run tests
         run: cargo test
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Stage binary
+        run: |
+          set -eu
+          mkdir -p staging
+          cp target/${{ matrix.target }}/release/review-agent staging/
+          cp action.yml staging/
+          cp README.md staging/
+          echo "${{ github.ref_name }}" > staging/VERSION
+          echo "${{ github.sha }}" > staging/COMMIT
+
+      - name: Create archive
+        run: |
+          set -eu
+          cd staging
+          tar -czf ../${{ matrix.artifact }}-${{ github.ref_name }}.tar.gz *
+          cd ..
+          ls -lh ${{ matrix.artifact }}-${{ github.ref_name }}.tar.gz
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}-${{ github.ref_name }}.tar.gz
+          retention-days: 7
+
+  docker:
+    runs-on: ubuntu-24.04
+    permissions:
+      packages: write
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -57,10 +105,29 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
 
+  release:
+    needs: [binary, docker]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Generate checksums
+        run: |
+          set -eu
+          mkdir -p release
+          find artifacts -name '*.tar.gz' -exec cp {} release/ \;
+          cd release
+          sha256sum * > SHA256SUMS.txt
+          ls -lh
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-') }}
-          files: |
-            action.yml
+          files: release/*
