@@ -78,12 +78,32 @@ impl Settings {
 
     /// Validate required fields are present and config values are in range.
     ///
-    /// Returns `AgentError::Config` if `github.token` or `ai.api_key` are
-    /// empty after file loading + env overlay. Also validates `ai.temperature`
-    /// is within the 0.0–2.0 range supported by OpenAI-compatible models.
-    /// Call this as the last step of `load()` so the error message is
-    /// actionable.
+    /// Validates:
+    /// - `ai.api_key` is non-empty (required)
+    /// - `ai.api_base` is a valid URL with an `https` scheme
+    /// - `ai.temperature` is within the 0.0–2.0 range
+    /// - `ai.request_timeout_secs` and `review.max_input_tokens` are positive
+    ///
+    /// Call this as the last step of `load()` so the error message is actionable.
     pub fn validate(&self) -> Result<()> {
+        if self.ai.api_key.inner().is_empty() {
+            return Err(AgentError::Config(
+                "AI_API_KEY is required — set via AI_API_KEY env var or config file".into(),
+            ));
+        }
+        if self.ai.api_base.is_empty() {
+            return Err(AgentError::Config(
+                "AI_API_BASE must be a non-empty URL".into(),
+            ));
+        }
+        if url::Url::parse(&self.ai.api_base).is_err()
+            || !self.ai.api_base.starts_with("https://")
+        {
+            return Err(AgentError::Config(format!(
+                "AI_API_BASE must be a valid https URL, got '{}'",
+                self.ai.api_base
+            )));
+        }
         if self.ai.temperature.is_nan() || !(0.0..=2.0).contains(&self.ai.temperature) {
             let detail = if self.ai.temperature.is_nan() {
                 "NaN (not a number)".to_string()
@@ -95,42 +115,47 @@ impl Settings {
                 detail
             )));
         }
+        if self.ai.request_timeout_secs == 0 {
+            return Err(AgentError::Config(
+                "ai.request_timeout_secs must be greater than 0".into(),
+            ));
+        }
+        if self.review.max_input_tokens == 0 {
+            return Err(AgentError::Config(
+                "review.max_input_tokens must be greater than 0".into(),
+            ));
+        }
         Ok(())
     }
 
     fn from_toml_file() -> Option<Self> {
-        let mut candidates: Vec<String> = Vec::new();
+        let mut candidates: Vec<PathBuf> = Vec::new();
 
         // 1. GITHUB_WORKSPACE (GitHub Action mounts repo here)
         if let Ok(workspace) = std::env::var("GITHUB_WORKSPACE") {
-            candidates.push(
-                PathBuf::from(workspace)
-                    .join(".github/reviewer.toml")
-                    .to_string_lossy()
-                    .to_string(),
-            );
+            candidates.push(PathBuf::from(workspace).join(".github/reviewer.toml"));
         }
 
         // 2-4. Standard paths
         candidates.push("reviewer.toml".into());
         candidates.push(".reviewer.toml".into());
-        candidates.push("~/.config/reviewer/config.toml".into());
+        candidates.push(PathBuf::from(
+            shellexpand::tilde("~/.config/reviewer/config.toml").as_ref(),
+        ));
 
-        for raw in &candidates {
-            let expanded = shellexpand::tilde(raw).to_string();
-            let path = PathBuf::from(&expanded);
+        for path in &candidates {
             if path.exists() {
-                let contents = match std::fs::read_to_string(&path) {
+                let contents = match std::fs::read_to_string(path) {
                     Ok(c) => c,
                     Err(e) => {
-                        tracing::warn!(path = %expanded, error = %e, "Failed to read config file");
+                        tracing::warn!(path = %path.display(), error = %e, "Failed to read config file");
                         continue;
                     }
                 };
                 match toml::from_str::<Self>(&contents) {
                     Ok(s) => return Some(s),
                     Err(e) => {
-                        tracing::warn!(path = %expanded, error = %e, "Failed to parse config file");
+                        tracing::warn!(path = %path.display(), error = %e, "Failed to parse config file");
                         continue;
                     }
                 }
@@ -293,28 +318,26 @@ mod tests {
     }
 
     #[test]
-    fn validate_passes_without_token_or_key() {
+    fn validate_rejects_without_ai_key() {
         let s = Settings::default();
-        assert!(s.github.token.inner().is_empty(), "token should be empty by default");
         assert!(s.ai.api_key.inner().is_empty(), "api key should be empty by default");
-        let result = s.validate();
-        assert!(result.is_ok(), "validate should pass without token or key: {:?}", result);
+        let err = s.validate().unwrap_err();
+        assert!(err.to_string().contains("AI_API_KEY"), "should reject missing key: {:?}", err);
     }
 
     #[test]
     fn validate_passes_with_all_required() {
         let mut s = Settings::default();
-        s.github.token = Sensitive::new("ghp_token".into());
         s.ai.api_key = Sensitive::new("sk-key".into());
+        s.ai.api_base = "https://api.example.com/v1".into();
         assert!(s.validate().is_ok());
     }
 
     #[test]
     fn validate_rejects_out_of_range_temperature() {
         let mut s = Settings::default();
-        s.github.token = Sensitive::new("ghp_token".into());
         s.ai.api_key = Sensitive::new("sk-key".into());
-
+        s.ai.api_base = "https://api.example.com/v1".into();
         // Below 0.0
         s.ai.temperature = -0.5;
         let err = s.validate().unwrap_err();
