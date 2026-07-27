@@ -43,10 +43,10 @@ pub(crate) fn read_single(path: &str, language_override: Option<&str>) -> Result
         .into());
     }
 
-    let content = std::fs::read_to_string(p)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("{path}: {e}")))?;
+    let content =
+        std::fs::read_to_string(p).map_err(|e| std::io::Error::other(format!("{path}: {e}")))?;
 
-    if is_binary(&content.as_bytes()) {
+    if is_binary(content.as_bytes()) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!("{path}: binary file not supported"),
@@ -79,9 +79,7 @@ pub(crate) fn read_glob(pattern: &str) -> Result<Vec<FileContent>> {
     })?;
 
     for entry in entries {
-        let entry_path = entry.map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::Other, format!("glob error: {e}"))
-        })?;
+        let entry_path = entry.map_err(|e| std::io::Error::other(format!("glob error: {e}")))?;
         let path_str = entry_path.to_string_lossy().to_string();
         match read_single(&path_str, None) {
             Ok(fc) => files.push(fc),

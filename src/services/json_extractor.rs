@@ -43,10 +43,8 @@ impl JsonExtractor {
         match json_value {
             Some(Value::Array(items)) => {
                 let total_items = items.len();
-                let findings: Vec<ReviewFinding> = items
-                    .into_iter()
-                    .filter_map(|item| parse_single_finding(item))
-                    .collect();
+                let findings: Vec<ReviewFinding> =
+                    items.into_iter().filter_map(parse_single_finding).collect();
                 let dropped_count = total_items - findings.len();
                 ExtractedFindings {
                     findings,

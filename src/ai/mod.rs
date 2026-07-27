@@ -218,7 +218,10 @@ fn body_snippet(body: &str) -> String {
     if trimmed.len() <= MAX_BODY_SNIPPET {
         trimmed.to_string()
     } else {
-        let end = trimmed.floor_char_boundary(MAX_BODY_SNIPPET);
+        let end = (0..=MAX_BODY_SNIPPET)
+            .rev()
+            .find(|&i| trimmed.is_char_boundary(i))
+            .unwrap_or(0);
         format!("{}…[truncated]", &trimmed[..end])
     }
 }
