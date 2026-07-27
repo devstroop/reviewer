@@ -33,6 +33,13 @@ pub(crate) struct ReviewDiffArgs {
     pub description: Option<String>,
     #[serde(default)]
     pub extra_instructions: String,
+    /// Output format: "reviewer" (default) or "sarif"
+    #[serde(default = "default_format")]
+    pub format: String,
+}
+
+fn default_format() -> String {
+    "reviewer".into()
 }
 
 fn default_domain() -> String {
@@ -79,7 +86,8 @@ pub(crate) fn tool_definitions() -> Vec<(String, String, Value)> {
                     "domain": { "type": "string", "description": "Review domain: 'code', 'config', 'policy', 'design', 'data'", "default": "code" },
                     "language": { "type": "string", "description": "Primary programming language hint (e.g. 'Rust', 'Python'). Only used in 'code' domain.", "default": "Unknown" },
                     "description": { "type": "string", "description": "Optional longer description of the change" },
-                    "extra_instructions": { "type": "string", "description": "Extra context injected into the review prompt", "default": "" }
+                    "extra_instructions": { "type": "string", "description": "Extra context injected into the review prompt", "default": "" },
+                    "format": { "type": "string", "description": "Output format: 'reviewer' (default) or 'sarif'", "default": "reviewer" }
                 },
                 "required": ["diff", "title"]
             }),
@@ -165,7 +173,12 @@ pub(crate) async fn handle_review_diff(
         .await
         .map_err(|e| format!("Review failed: {e}"))?;
 
-    serde_json::to_value(&result).map_err(|e| format!("Failed to serialize result: {e}"))
+    if args.format == "sarif" {
+        let sarif = crate::sarif::to_sarif_value(&result);
+        serde_json::to_value(&sarif).map_err(|e| format!("SARIF serialization failed: {e}"))
+    } else {
+        serde_json::to_value(&result).map_err(|e| format!("Failed to serialize result: {e}"))
+    }
 }
 
 /// Handle the `review_files` tool.

@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use reviewer::engine::ReviewSource;
 use reviewer::github::parse_pr_url;
 use reviewer::logging;
 use reviewer::tools::review::ReviewTool;
@@ -33,6 +34,24 @@ enum Command {
     },
     /// Start MCP stdio server for AI agent integration
     Mcp,
+    /// Review a diff piped via stdin
+    ReviewStdin {
+        /// A short title describing the change
+        #[arg(long)]
+        title: String,
+        /// Review domain (code, config, policy, etc.)
+        #[arg(long, default_value = "code")]
+        domain: String,
+        /// Output format: "reviewer" (default) or "sarif"
+        #[arg(long, default_value = "reviewer")]
+        format: String,
+        /// Optional language hint (only used in code domain)
+        #[arg(long)]
+        language: Option<String>,
+        /// Extra context injected into the review prompt
+        #[arg(long, default_value = "")]
+        extra_instructions: String,
+    },
 }
 
 #[tokio::main]
@@ -216,6 +235,40 @@ async fn main() -> anyhow::Result<()> {
             tracing::info!("Starting MCP stdio server");
             let settings = reviewer::Settings::load()?;
             reviewer::mcp::run(&settings).await?;
+        }
+        Command::ReviewStdin {
+            title,
+            domain,
+            format,
+            language,
+            extra_instructions,
+        } => {
+            tracing::info!(title, domain, "ReviewStdin command");
+            let settings = reviewer::Settings::load()?;
+            let engine = reviewer::engine::ReviewEngine::new(&settings)?;
+
+            use reviewer::engine::{ReviewOptions, ReviewRequest};
+            let request = ReviewRequest {
+                source: ReviewSource::Stdin {
+                    title: title.clone(),
+                    domain: domain.clone(),
+                    language_hint: language.clone().unwrap_or_default(),
+                },
+                options: ReviewOptions {
+                    post_to_github: false,
+                    paths: Vec::new(),
+                    extra_instructions: extra_instructions.clone(),
+                },
+            };
+
+            let result = engine.review(request).await?;
+
+            if format == "sarif" {
+                let sarif = reviewer::sarif::to_sarif_value(&result);
+                println!("{}", serde_json::to_string_pretty(&sarif)?);
+            } else {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            }
         }
     }
 

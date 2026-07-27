@@ -9,12 +9,14 @@ use crate::ai::AiClient;
 use crate::config::Settings;
 use crate::error::{AgentError, Result};
 use crate::services::{
-    json_extractor::{MIN_TOKENS_FOR_RETRY},
+    json_extractor::{ExtractedFindings, MIN_TOKENS_FOR_RETRY},
     DiffService, GithubService, JsonExtractor, PromptBuilder, PromptContext,
 };
 use crate::tokens::estimate_tokens;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 use std::time::Instant;
+use tokio::io::AsyncReadExt;
 use tracing::info;
 
 /// Baseline token overhead for prompt template text that is not part of the
@@ -59,6 +61,12 @@ pub enum ReviewSource {
         domain: String,
         language_hint: String,
         description: Option<String>,
+    },
+    /// Read diff from stdin with a 5s timeout.
+    Stdin {
+        title: String,
+        domain: String,
+        language_hint: String,
     },
 }
 
@@ -269,6 +277,33 @@ impl ReviewEngine {
                 domain,
                 language_hint: Some(language_hint),
             },
+            ReviewSource::Stdin {
+                title,
+                domain,
+                language_hint,
+            } => {
+                let mut diff = String::new();
+                tokio::time::timeout(
+                    Duration::from_secs(5),
+                    tokio::io::stdin().read_to_string(&mut diff),
+                )
+                .await
+                .map_err(|_| AgentError::StdinTimeout)?
+                .map_err(AgentError::Io)?;
+                ResolvedSource {
+                    pr_number: None,
+                    pr_title: Some(title),
+                    description: None,
+                    raw_diff: diff,
+                    owner: None,
+                    repo: None,
+                    author: None,
+                    branch: None,
+                    base: None,
+                    domain,
+                    language_hint: Some(language_hint),
+                }
+            }
         };
 
         // ── 2. Parse + filter skippable files ───────────────────

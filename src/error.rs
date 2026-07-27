@@ -62,6 +62,10 @@ pub enum AgentError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// Stdin had no data within the timeout window.
+    #[error("Stdin timeout: no data received within 5 seconds")]
+    StdinTimeout,
+
     /// An HTTP error from `reqwest` — connection failure, DNS resolution,
     /// TLS handshake failure, etc.
     ///
