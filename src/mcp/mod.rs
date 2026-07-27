@@ -22,7 +22,13 @@ const MAX_LINE_LENGTH: usize = 1 << 20; // 1 MiB
 pub async fn run(settings: &Settings) -> Result<()> {
     eprintln!("[mcp] Starting review-agent MCP server");
 
-    let engine = ReviewEngine::new(settings)?;
+    let engine = match ReviewEngine::new(settings) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("[mcp] Failed to create ReviewEngine: {e}");
+            return Err(e);
+        }
+    };
     let tool_defs = tool_definitions();
     let initialized = Arc::new(AtomicBool::new(false));
 
@@ -183,11 +189,12 @@ fn handle_initialize(params: Option<&Value>) -> std::result::Result<Value, (i32,
         .and_then(|p| p.get("protocolVersion"))
         .and_then(|v| v.as_str())
     {
-        // Accept any 2024-xx-xx version (the spec uses 2024-11-05).
-        // This is forward-compatible with minor revisions of the
-        // 2024 line.  Clients on older or newer lines will be
-        // rejected with a clear error.
-        if !client_version.starts_with("2024-") {
+        // Accept any version >= 2024-xx-xx (the spec uses 2024-11-05).
+        // The year prefix determines compatibility — 2024, 2025, 2026+ are
+        // all accepted as forward-compatible.
+        let year_ok = client_version.len() >= 4 &&
+            client_version[..4].parse::<i32>().unwrap_or(0) >= 2024;
+        if !year_ok {
             return Err((
                 INVALID_REQUEST,
                 format!(
