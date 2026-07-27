@@ -52,6 +52,40 @@ enum Command {
         #[arg(long, default_value = "")]
         extra_instructions: String,
     },
+    /// Review a single file from the filesystem
+    ReviewFile {
+        /// Path to the file to review
+        path: String,
+        /// Review domain
+        #[arg(long, default_value = "code")]
+        domain: String,
+        /// Output format: "reviewer" (default) or "sarif"
+        #[arg(long, default_value = "reviewer")]
+        format: String,
+        /// Optional language override
+        #[arg(long)]
+        language: Option<String>,
+        /// Optional description/context for the review
+        #[arg(long)]
+        description: Option<String>,
+        /// Extra context injected into the review prompt
+        #[arg(long, default_value = "")]
+        extra_instructions: String,
+    },
+    /// Review all files matching a glob pattern
+    ReviewGlob {
+        /// Glob pattern (e.g. "src/**/*.rs")
+        pattern: String,
+        /// Review domain
+        #[arg(long, default_value = "code")]
+        domain: String,
+        /// Output format: "reviewer" (default) or "sarif"
+        #[arg(long, default_value = "reviewer")]
+        format: String,
+        /// Extra context injected into the review prompt
+        #[arg(long, default_value = "")]
+        extra_instructions: String,
+    },
 }
 
 #[tokio::main]
@@ -253,6 +287,74 @@ async fn main() -> anyhow::Result<()> {
                     title: title.clone(),
                     domain: domain.clone(),
                     language_hint: language.clone().unwrap_or_default(),
+                },
+                options: ReviewOptions {
+                    post_to_github: false,
+                    paths: Vec::new(),
+                    extra_instructions: extra_instructions.clone(),
+                },
+            };
+
+            let result = engine.review(request).await?;
+
+            if format == "sarif" {
+                let sarif = reviewer::sarif::to_sarif_value(&result);
+                println!("{}", serde_json::to_string_pretty(&sarif)?);
+            } else {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            }
+        }
+        Command::ReviewFile {
+            path,
+            domain,
+            format,
+            language,
+            description,
+            extra_instructions,
+        } => {
+            tracing::info!(path, domain, "ReviewFile command");
+            let settings = reviewer::Settings::load()?;
+            let engine = reviewer::engine::ReviewEngine::new(&settings)?;
+
+            use reviewer::engine::{ReviewOptions, ReviewRequest};
+            let request = ReviewRequest {
+                source: ReviewSource::File {
+                    path: path.clone(),
+                    domain: domain.clone(),
+                    language: language.clone(),
+                    description: description.clone(),
+                },
+                options: ReviewOptions {
+                    post_to_github: false,
+                    paths: Vec::new(),
+                    extra_instructions: extra_instructions.clone(),
+                },
+            };
+
+            let result = engine.review(request).await?;
+
+            if format == "sarif" {
+                let sarif = reviewer::sarif::to_sarif_value(&result);
+                println!("{}", serde_json::to_string_pretty(&sarif)?);
+            } else {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            }
+        }
+        Command::ReviewGlob {
+            pattern,
+            domain,
+            format,
+            extra_instructions,
+        } => {
+            tracing::info!(pattern, domain, "ReviewGlob command");
+            let settings = reviewer::Settings::load()?;
+            let engine = reviewer::engine::ReviewEngine::new(&settings)?;
+
+            use reviewer::engine::{ReviewOptions, ReviewRequest};
+            let request = ReviewRequest {
+                source: ReviewSource::Glob {
+                    pattern: pattern.clone(),
+                    domain: domain.clone(),
                 },
                 options: ReviewOptions {
                     post_to_github: false,

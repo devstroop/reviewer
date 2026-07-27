@@ -1,14 +1,8 @@
-## PR: {title}
-
-**Repository:** {owner}/{repo}
-**Author:** {author}
-**Branch:** {branch} → {base}
-**Language:** {language}
-**Description:** {description}
+{pr_metadata}
 
 ---
 
-### Files Changed ({total_files})
+### Files ({total_files})
 
 {file_list}
 
@@ -16,8 +10,4 @@
 
 ---
 
-### Diff
-
-```
-{diff}
-```
+{content_format}

@@ -4,6 +4,7 @@
 //! testing but never exposed through the public API.
 
 pub(crate) mod diff_service;
+pub(crate) mod file_reader;
 pub(crate) mod github_service;
 pub(crate) mod json_extractor;
 pub(crate) mod prompt_builder;

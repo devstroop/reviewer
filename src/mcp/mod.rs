@@ -5,7 +5,8 @@ use crate::config::Settings;
 use crate::engine::ReviewEngine;
 use crate::error::Result;
 use crate::mcp::tools::{
-    handle_review_diff, handle_review_files, handle_review_pr, tool_definitions,
+    handle_review_diff, handle_review_file, handle_review_files, handle_review_glob,
+    handle_review_pr, tool_definitions,
 };
 use crate::mcp::types::*;
 use serde_json::Value;
@@ -260,6 +261,8 @@ async fn handle_tools_call(
         "review_pr" => handle_review_pr(engine, arguments).await,
         "review_diff" => handle_review_diff(engine, arguments).await,
         "review_files" => handle_review_files(engine, arguments).await,
+        "review_file" => handle_review_file(engine, arguments).await,
+        "review_glob" => handle_review_glob(engine, arguments).await,
         _ => return Err((METHOD_NOT_FOUND, format!("unknown tool: {name}"))),
     };
 

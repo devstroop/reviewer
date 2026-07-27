@@ -7,6 +7,7 @@
 
 use crate::diff::{DiffFile, DiffStatus, format_diff_context};
 use crate::language::detect_language;
+use crate::services::file_reader::FileContent;
 use crate::tokens::estimate_tokens;
 use std::path::Path;
 
@@ -76,7 +77,7 @@ impl PromptBuilder {
         estimate_tokens(&self.system_prompt)
     }
 
-    /// Fill the user prompt template with PR metadata and diff context.
+    /// Fill the user prompt template with metadata and diff context.
     pub(crate) fn user_prompt(
         &self,
         ctx: &PromptContext<'_>,
@@ -88,6 +89,11 @@ impl PromptBuilder {
         let diff_context = format_diff_context(files, usize::MAX);
         let total_files = files.len();
 
+        let pr_metadata = self.pr_metadata_section(ctx, &language);
+        let content_format = format!(
+            "### Diff\n\n```\n{}\n```",
+            diff_context
+        );
         let extra_section = if extra.is_empty() {
             String::new()
         } else {
@@ -96,6 +102,7 @@ impl PromptBuilder {
 
         self.user_template
             .replace("{title}", ctx.title)
+            .replace("{pr_metadata}", &pr_metadata)
             .replace("{owner}", ctx.owner)
             .replace("{repo}", ctx.repo)
             .replace("{author}", ctx.author)
@@ -106,7 +113,73 @@ impl PromptBuilder {
             .replace("{total_files}", &total_files.to_string())
             .replace("{file_list}", &file_list)
             .replace("{extra_instructions}", &extra_section)
-            .replace("{diff}", &diff_context)
+            .replace("{content_format}", &content_format)
+    }
+
+    /// Fill the user prompt template with metadata and FILE content (not diff).
+    pub(crate) fn user_prompt_for_files(
+        &self,
+        ctx: &PromptContext<'_>,
+        files: &[FileContent],
+        extra: &str,
+    ) -> String {
+        let language = if let Some(hint) = ctx.language_hint {
+            hint.to_string()
+        } else {
+            let detected = Self::detect_primary_from_files(files);
+            if detected != "Unknown" { detected } else { "Unknown".to_string() }
+        };
+        let file_list = self.format_file_list_from_files(files);
+        let file_context = format_file_context(files);
+        let total_files = files.len();
+
+        let pr_metadata = self.pr_metadata_section(ctx, &language);
+        let content_format = format!(
+            "### File Contents\n\n{}",
+            file_context
+        );
+        let extra_section = if extra.is_empty() {
+            String::new()
+        } else {
+            format!("### Additional Instructions\n\n{}\n", extra)
+        };
+
+        self.user_template
+            .replace("{title}", ctx.title)
+            .replace("{pr_metadata}", &pr_metadata)
+            .replace("{owner}", ctx.owner)
+            .replace("{repo}", ctx.repo)
+            .replace("{author}", ctx.author)
+            .replace("{branch}", ctx.branch)
+            .replace("{base}", ctx.base)
+            .replace("{language}", &language)
+            .replace("{description}", ctx.description)
+            .replace("{total_files}", &total_files.to_string())
+            .replace("{file_list}", &file_list)
+            .replace("{extra_instructions}", &extra_section)
+            .replace("{content_format}", &content_format)
+    }
+
+    /// Build the PR metadata section. Returns empty string when owner is absent
+    /// (file/glob sources).
+    fn pr_metadata_section(&self, ctx: &PromptContext<'_>, language: &str) -> String {
+        if ctx.owner.is_empty() {
+            return format!(
+                "## {}\n\n**Language:** {}\n**Description:** {}",
+                ctx.title, language, ctx.description
+            );
+        }
+        format!(
+            "## PR: {title}\n\n**Repository:** {owner}/{repo}\n**Author:** {author}\n**Branch:** {branch} → {base}\n**Language:** {language}\n**Description:** {description}",
+            title = ctx.title,
+            owner = ctx.owner,
+            repo = ctx.repo,
+            author = ctx.author,
+            branch = ctx.branch,
+            base = ctx.base,
+            language = language,
+            description = ctx.description,
+        )
     }
 
     /// Detect the primary language, or return language hint.
@@ -165,6 +238,47 @@ impl PromptBuilder {
         }
         out
     }
+
+    /// Format a bullet list of files with their language (for file content mode).
+    fn format_file_list_from_files(&self, files: &[FileContent]) -> String {
+        let mut out = String::new();
+        for f in files {
+            out.push_str(&format!("- `{}` ({} — {} lines)\n", f.path, f.language, f.line_count));
+        }
+        if out.is_empty() {
+            out.push_str("- (no files)");
+        }
+        out
+    }
+
+    /// Determine the primary language from FileContent entries.
+    fn detect_primary_from_files(files: &[FileContent]) -> String {
+        use std::collections::HashMap;
+        let mut counts: HashMap<String, usize> = HashMap::new();
+        for f in files {
+            *counts.entry(f.language.clone()).or_insert(0) += 1;
+        }
+        counts
+            .into_iter()
+            .max_by_key(|(_, c)| *c)
+            .map(|(lang, _)| lang)
+            .unwrap_or_else(|| "Unknown".to_string())
+    }
+}
+
+/// Format file content for inclusion in the AI prompt.
+pub(crate) fn format_file_context(files: &[FileContent]) -> String {
+    let mut out = String::new();
+    for f in files {
+        out.push_str(&format!("### File: {} ({})\n\n", f.path, f.language));
+        out.push_str(&format!("```{}\n", f.language.to_lowercase()));
+        out.push_str(&f.content);
+        if !f.content.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str("```\n\n");
+    }
+    out
 }
 
 #[cfg(test)]

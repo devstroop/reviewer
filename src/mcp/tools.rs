@@ -56,6 +56,28 @@ pub(crate) struct ReviewFilesArgs {
     pub extra_instructions: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub(crate) struct ReviewFileArgs {
+    pub path: String,
+    #[serde(default = "default_domain")]
+    pub domain: String,
+    #[serde(default)]
+    pub language: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub extra_instructions: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ReviewGlobArgs {
+    pub pattern: String,
+    #[serde(default = "default_domain")]
+    pub domain: String,
+    #[serde(default)]
+    pub extra_instructions: String,
+}
+
 // ── Tool definitions ──────────────────────────────────────────
 
 /// All tools that this server exposes.
@@ -104,6 +126,34 @@ pub(crate) fn tool_definitions() -> Vec<(String, String, Value)> {
                     "extra_instructions": { "type": "string", "description": "Extra context injected into the review prompt", "default": "" }
                 },
                 "required": ["pr_url", "paths"]
+            }),
+        ),
+        (
+            "review_file".into(),
+            "Review a single file from the filesystem. Path must be relative and must not contain '..'.".into(),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Path to the file to review (relative to CWD)" },
+                    "domain": { "type": "string", "description": "Review domain", "default": "code" },
+                    "language": { "type": "string", "description": "Optional language override" },
+                    "description": { "type": "string", "description": "Optional context for the review" },
+                    "extra_instructions": { "type": "string", "description": "Extra context injected into the review prompt", "default": "" }
+                },
+                "required": ["path"]
+            }),
+        ),
+        (
+            "review_glob".into(),
+            "Review all files matching a glob pattern. Patterns are relative to CWD.".into(),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "pattern": { "type": "string", "description": "Glob pattern, e.g. 'src/**/*.rs'" },
+                    "domain": { "type": "string", "description": "Review domain", "default": "code" },
+                    "extra_instructions": { "type": "string", "description": "Extra context injected into the review prompt", "default": "" }
+                },
+                "required": ["pattern"]
             }),
         ),
     ]
@@ -174,11 +224,68 @@ pub(crate) async fn handle_review_diff(
         .map_err(|e| format!("Review failed: {e}"))?;
 
     if args.format == "sarif" {
-        let sarif = crate::sarif::to_sarif_value(&result);
-        serde_json::to_value(&sarif).map_err(|e| format!("SARIF serialization failed: {e}"))
+        Ok(crate::sarif::to_sarif_value(&result))
     } else {
         serde_json::to_value(&result).map_err(|e| format!("Failed to serialize result: {e}"))
     }
+}
+
+/// Handle the `review_file` tool.
+pub(crate) async fn handle_review_file(
+    engine: &ReviewEngine,
+    params: Value,
+) -> std::result::Result<Value, String> {
+    let args: ReviewFileArgs =
+        serde_json::from_value(params).map_err(|e| format!("Invalid arguments: {e}"))?;
+
+    let request = ReviewRequest {
+        source: ReviewSource::File {
+            path: args.path,
+            domain: args.domain,
+            language: args.language,
+            description: args.description,
+        },
+        options: ReviewOptions {
+            post_to_github: false,
+            paths: Vec::new(),
+            extra_instructions: args.extra_instructions,
+        },
+    };
+
+    let result = engine
+        .review(request)
+        .await
+        .map_err(|e| format!("Review failed: {e}"))?;
+
+    serde_json::to_value(&result).map_err(|e| format!("Failed to serialize result: {e}"))
+}
+
+/// Handle the `review_glob` tool.
+pub(crate) async fn handle_review_glob(
+    engine: &ReviewEngine,
+    params: Value,
+) -> std::result::Result<Value, String> {
+    let args: ReviewGlobArgs =
+        serde_json::from_value(params).map_err(|e| format!("Invalid arguments: {e}"))?;
+
+    let request = ReviewRequest {
+        source: ReviewSource::Glob {
+            pattern: args.pattern,
+            domain: args.domain,
+        },
+        options: ReviewOptions {
+            post_to_github: false,
+            paths: Vec::new(),
+            extra_instructions: args.extra_instructions,
+        },
+    };
+
+    let result = engine
+        .review(request)
+        .await
+        .map_err(|e| format!("Review failed: {e}"))?;
+
+    serde_json::to_value(&result).map_err(|e| format!("Failed to serialize result: {e}"))
 }
 
 /// Handle the `review_files` tool.
