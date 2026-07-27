@@ -9,7 +9,7 @@ use crate::ai::AiClient;
 use crate::config::Settings;
 use crate::error::{AgentError, Result};
 use crate::services::{
-    json_extractor::{ExtractedFindings, MIN_TOKENS_FOR_RETRY},
+    json_extractor::MIN_TOKENS_FOR_RETRY,
     DiffService, GithubService, JsonExtractor, PromptBuilder, PromptContext,
 };
 use crate::tokens::estimate_tokens;

@@ -63,11 +63,11 @@ pub(crate) fn tool_definitions() -> Vec<(String, String, Value)> {
     vec![
         (
             "review_pr".into(),
-            "Review a GitHub pull request. Fetches the diff, analyzes it with the AI, and optionally posts the review as a comment on the PR.".into(),
+            "Review a GitHub pull request. Fetches the diff, analyzes it with the AI, and optionally posts the review as a comment on the PR. Supports GitHub, GitLab, and Bitbucket URLs.".into(),
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "pr_url": { "type": "string", "description": "Full GitHub PR URL, e.g. https://github.com/owner/repo/pull/42" },
+                    "pr_url": { "type": "string", "description": "Full PR URL — e.g. https://github.com/owner/repo/pull/42, https://gitlab.com/o/r/-/merge_requests/7, or https://bitbucket.org/o/r/pull-requests/99" },
                     "post": { "type": "boolean", "description": "Whether to post the review to GitHub as a PR comment", "default": true },
                     "paths": { "type": "array", "items": { "type": "string" }, "description": "Only review files matching these path prefixes", "default": [] },
                     "extra_instructions": { "type": "string", "description": "Extra context injected into the review prompt", "default": "" }
@@ -94,11 +94,11 @@ pub(crate) fn tool_definitions() -> Vec<(String, String, Value)> {
         ),
         (
             "review_files".into(),
-            "Review only specific files from a GitHub pull request. Useful when the AI wants to focus on relevant changes after inspecting the PR's file list.".into(),
+            "Review only specific files from a pull request (GitHub, GitLab, Bitbucket). Useful when the AI wants to focus on relevant changes after inspecting the PR's file list.".into(),
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "pr_url": { "type": "string", "description": "Full GitHub PR URL, e.g. https://github.com/owner/repo/pull/42" },
+                    "pr_url": { "type": "string", "description": "Full PR URL — e.g. https://github.com/owner/repo/pull/42, https://gitlab.com/o/r/-/merge_requests/7, or https://bitbucket.org/o/r/pull-requests/99" },
                     "paths": { "type": "array", "items": { "type": "string" }, "description": "Only review files matching these path prefixes" },
                     "post": { "type": "boolean", "description": "Whether to post the review to GitHub", "default": false },
                     "extra_instructions": { "type": "string", "description": "Extra context injected into the review prompt", "default": "" }
