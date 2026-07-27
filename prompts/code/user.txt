@@ -1,0 +1,13 @@
+{pr_metadata}
+
+---
+
+### Files ({total_files})
+
+{file_list}
+
+{extra_instructions}
+
+---
+
+{content_format}

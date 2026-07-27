@@ -19,8 +19,65 @@ use tracing::warn;
 /// GitHub API base URL.
 const GITHUB_API_BASE: &str = "https://api.github.com";
 
-/// Parse a GitHub PR URL of the form `https://github.com/{owner}/{repo}/pull/{number}`
-/// into its components.  Also accepts `www.github.com`.
+/// Supported Git hosting platforms.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GitHost {
+    GitHub,
+    GitLab,
+    Bitbucket,
+}
+
+impl GitHost {
+    fn from_host(host: &str) -> std::result::Result<Self, String> {
+        match host.to_lowercase().as_str() {
+            "github.com" | "www.github.com" => Ok(GitHost::GitHub),
+            "gitlab.com" => Ok(GitHost::GitLab),
+            "bitbucket.org" => Ok(GitHost::Bitbucket),
+            _ => Err(format!(
+                "URL host must be github.com, gitlab.com, or bitbucket.org, got '{host}'"
+            )),
+        }
+    }
+
+    /// Expected path pattern for this host. Returns `None` if the segments
+    /// don't match. The number's position in the segments is returned as a
+    /// separate index so callers can parse it.
+    fn path_format(&self, segments: &[String]) -> Option<usize> {
+        match self {
+            GitHost::GitHub => {
+                // /owner/repo/pull/N
+                if segments.len() >= 4 && segments[2].eq_ignore_ascii_case("pull") {
+                    Some(3)
+                } else {
+                    None
+                }
+            }
+            GitHost::GitLab => {
+                // /owner/repo/-/merge_requests/N
+                if segments.len() >= 5 && segments[2] == "-" && segments[3] == "merge_requests" {
+                    Some(4)
+                } else {
+                    None
+                }
+            }
+            GitHost::Bitbucket => {
+                // /owner/repo/pull-requests/N
+                if segments.len() >= 4 && segments[2] == "pull-requests" {
+                    Some(3)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+}
+
+/// Parse a PR URL from GitHub, GitLab, or Bitbucket into (owner, repo, number).
+///
+/// Supported formats:
+/// - `https://github.com/{owner}/{repo}/pull/{number}`
+/// - `https://gitlab.com/{owner}/{repo}/-/merge_requests/{number}`
+/// - `https://bitbucket.org/{owner}/{repo}/pull-requests/{number}`
 ///
 /// Extra trailing path segments (e.g. `/files`) are tolerated.
 /// Returns a descriptive error string on failure.
@@ -38,9 +95,7 @@ pub fn parse_pr_url(url_str: &str) -> std::result::Result<(String, String, u64),
     }
 
     let host = parsed.host_str().unwrap_or("");
-    if !host.eq_ignore_ascii_case("github.com") && !host.eq_ignore_ascii_case("www.github.com") {
-        return Err(format!("URL host must be github.com, got '{host}'"));
-    }
+    let git_host = GitHost::from_host(host)?;
 
     // url::Url::path_segments() returns raw percent-encoded segments.
     // The url crate does NOT automatically decode them — we decode only
@@ -70,29 +125,36 @@ pub fn parse_pr_url(url_str: &str) -> std::result::Result<(String, String, u64),
         .transpose()?
         .unwrap_or_default();
 
-    // Reject URLs with too few segments or a non-"pull" third segment.
-    if segments.len() < 4 || !segments[2].eq_ignore_ascii_case("pull") {
-        return Err(format!(
-            "URL path must be /owner/repo/pull/N, got '/{}'",
+    let number_idx = git_host.path_format(&segments).ok_or_else(|| {
+        let expected = match git_host {
+            GitHost::GitHub => "/owner/repo/pull/N",
+            GitHost::GitLab => "/owner/repo/-/merge_requests/N",
+            GitHost::Bitbucket => "/owner/repo/pull-requests/N",
+        };
+        format!(
+            "URL path must be {expected} for {}, got '/{}'",
+            match git_host {
+                GitHost::GitHub => "github.com",
+                GitHost::GitLab => "gitlab.com",
+                GitHost::Bitbucket => "bitbucket.org",
+            },
             segments.join("/")
-        ));
-    }
+        )
+    })?;
 
-    // Warn when extra trailing segments are present (e.g. /files, /commits).
-    if segments.len() > 4 {
+    // Warn when extra trailing segments are present.
+    let expected_count = number_idx + 1;
+    if segments.len() > expected_count {
         tracing::warn!(
-            "PR URL has {} trailing path segment(s) — only the first 4 are used",
-            segments.len() - 4
+            "PR URL has {} trailing path segment(s) — only the first {} are used",
+            segments.len() - expected_count,
+            expected_count,
         );
     }
 
-    // Security: The `url` crate does NOT normalise `..` path segments; it
-    // returns them verbatim.  Path traversal is prevented by the explicit
-    // `valid_segment` check below, which rejects segments containing `..`.
-
-    let number: u64 = segments[3]
+    let number: u64 = segments[number_idx]
         .parse()
-        .map_err(|e| format!("Invalid PR number '{}': {e}", segments[3]))?;
+        .map_err(|e| format!("Invalid PR number '{}': {e}", segments[number_idx]))?;
 
     // Validate owner and repo segments are safe identifiers — only
     // alphanumeric, `.`, `_`, `-`.  This prevents path traversal in
@@ -179,8 +241,9 @@ mod parse_pr_url_tests {
 
     #[test]
     fn parse_pr_url_wrong_host_rejected() {
-        assert!(parse_pr_url("https://gitlab.com/o/r/pull/1").is_err());
+        // gitlab.com is now accepted but with a different path format
         assert!(parse_pr_url("https://malicious.example.com/o/r/pull/1").is_err());
+        assert!(parse_pr_url("https://evil.com/o/r/pull-requests/1").is_err());
     }
 
     #[test]
@@ -226,6 +289,62 @@ mod parse_pr_url_tests {
     #[test]
     fn parse_pr_url_path_traversal_rejected() {
         assert!(parse_pr_url("https://github.com/o/r/pull/1/../../leak").is_err());
+    }
+
+    #[test]
+    fn parse_gitlab_url_valid() {
+        assert_eq!(
+            parse_pr_url("https://gitlab.com/owner/repo/-/merge_requests/42").unwrap(),
+            ("owner".into(), "repo".into(), 42)
+        );
+    }
+
+    #[test]
+    fn parse_gitlab_url_wrong_path_rejected() {
+        // GitLab URLs must use /-/merge_requests/N, not /pull/N
+        assert!(parse_pr_url("https://gitlab.com/o/r/pull/1").is_err());
+        assert!(parse_pr_url("https://gitlab.com/o/r/merge_requests/1").is_err());
+    }
+
+    #[test]
+    fn parse_bitbucket_url_valid() {
+        assert_eq!(
+            parse_pr_url("https://bitbucket.org/owner/repo/pull-requests/99").unwrap(),
+            ("owner".into(), "repo".into(), 99)
+        );
+    }
+
+    #[test]
+    fn parse_bitbucket_url_wrong_path_rejected() {
+        assert!(parse_pr_url("https://bitbucket.org/o/r/pull/1").is_err());
+    }
+
+    #[test]
+    fn parse_gitlab_path_traversal_rejected() {
+        assert!(parse_pr_url("https://gitlab.com/o/r/-/merge_requests/1/../../leak").is_err());
+    }
+
+    #[test]
+    fn parse_bitbucket_path_traversal_rejected() {
+        assert!(parse_pr_url("https://bitbucket.org/o/r/pull-requests/1/../../leak").is_err());
+    }
+
+    #[test]
+    fn parse_gitlab_percent_decoded_rejected() {
+        assert!(parse_pr_url("https://gitlab.com/user%2Fname/repo/-/merge_requests/1").is_err());
+    }
+
+    #[test]
+    fn parse_bitbucket_percent_decoded_rejected() {
+        assert!(parse_pr_url("https://bitbucket.org/user%2Fname/repo/pull-requests/1").is_err());
+    }
+
+    #[test]
+    fn parse_unknown_host_rejected() {
+        let err = parse_pr_url("https://bitbucket.example.com/o/r/pull/1").unwrap_err();
+        assert!(err.contains("must be github.com, gitlab.com, or bitbucket.org"));
+        let err = parse_pr_url("https://gitlab.example.com/o/r/pull/1").unwrap_err();
+        assert!(err.contains("must be github.com, gitlab.com, or bitbucket.org"));
     }
 }
 

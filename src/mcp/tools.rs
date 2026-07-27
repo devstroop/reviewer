@@ -26,15 +26,24 @@ fn default_post() -> bool {
 pub(crate) struct ReviewDiffArgs {
     pub diff: String,
     pub title: String,
-    #[serde(default = "default_language")]
-    pub language: String,
+    #[serde(default = "default_domain")]
+    pub domain: String,
+    #[serde(default)]
+    pub language: Option<String>,
     pub description: Option<String>,
     #[serde(default)]
     pub extra_instructions: String,
+    /// Output format: "reviewer" (default) or "sarif"
+    #[serde(default = "default_format")]
+    pub format: String,
 }
 
-fn default_language() -> String {
-    "Unknown".into()
+fn default_format() -> String {
+    "reviewer".into()
+}
+
+fn default_domain() -> String {
+    "code".into()
 }
 
 #[derive(Debug, Deserialize)]
@@ -47,6 +56,28 @@ pub(crate) struct ReviewFilesArgs {
     pub extra_instructions: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub(crate) struct ReviewFileArgs {
+    pub path: String,
+    #[serde(default = "default_domain")]
+    pub domain: String,
+    #[serde(default)]
+    pub language: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub extra_instructions: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ReviewGlobArgs {
+    pub pattern: String,
+    #[serde(default = "default_domain")]
+    pub domain: String,
+    #[serde(default)]
+    pub extra_instructions: String,
+}
+
 // ── Tool definitions ──────────────────────────────────────────
 
 /// All tools that this server exposes.
@@ -54,11 +85,11 @@ pub(crate) fn tool_definitions() -> Vec<(String, String, Value)> {
     vec![
         (
             "review_pr".into(),
-            "Review a GitHub pull request. Fetches the diff, analyzes it with the AI, and optionally posts the review as a comment on the PR.".into(),
+            "Review a GitHub pull request. Fetches the diff, analyzes it with the AI, and optionally posts the review as a comment on the PR. Supports GitHub, GitLab, and Bitbucket URLs.".into(),
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "pr_url": { "type": "string", "description": "Full GitHub PR URL, e.g. https://github.com/owner/repo/pull/42" },
+                    "pr_url": { "type": "string", "description": "Full PR URL — e.g. https://github.com/owner/repo/pull/42, https://gitlab.com/o/r/-/merge_requests/7, or https://bitbucket.org/o/r/pull-requests/99" },
                     "post": { "type": "boolean", "description": "Whether to post the review to GitHub as a PR comment", "default": true },
                     "paths": { "type": "array", "items": { "type": "string" }, "description": "Only review files matching these path prefixes", "default": [] },
                     "extra_instructions": { "type": "string", "description": "Extra context injected into the review prompt", "default": "" }
@@ -74,25 +105,55 @@ pub(crate) fn tool_definitions() -> Vec<(String, String, Value)> {
                 "properties": {
                     "diff": { "type": "string", "description": "Raw unified diff text (git diff output)" },
                     "title": { "type": "string", "description": "A short title describing the change" },
-                    "language": { "type": "string", "description": "Primary language hint (e.g. 'Rust', 'Python')", "default": "Unknown" },
+                    "domain": { "type": "string", "description": "Review domain: 'code', 'config', 'policy', 'design', 'data'", "default": "code" },
+                    "language": { "type": "string", "description": "Primary programming language hint (e.g. 'Rust', 'Python'). Only used in 'code' domain.", "default": "Unknown" },
                     "description": { "type": "string", "description": "Optional longer description of the change" },
-                    "extra_instructions": { "type": "string", "description": "Extra context injected into the review prompt", "default": "" }
+                    "extra_instructions": { "type": "string", "description": "Extra context injected into the review prompt", "default": "" },
+                    "format": { "type": "string", "description": "Output format: 'reviewer' (default) or 'sarif'", "default": "reviewer" }
                 },
                 "required": ["diff", "title"]
             }),
         ),
         (
             "review_files".into(),
-            "Review only specific files from a GitHub pull request. Useful when the AI wants to focus on relevant changes after inspecting the PR's file list.".into(),
+            "Review only specific files from a pull request (GitHub, GitLab, Bitbucket). Useful when the AI wants to focus on relevant changes after inspecting the PR's file list.".into(),
             serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "pr_url": { "type": "string", "description": "Full GitHub PR URL, e.g. https://github.com/owner/repo/pull/42" },
+                    "pr_url": { "type": "string", "description": "Full PR URL — e.g. https://github.com/owner/repo/pull/42, https://gitlab.com/o/r/-/merge_requests/7, or https://bitbucket.org/o/r/pull-requests/99" },
                     "paths": { "type": "array", "items": { "type": "string" }, "description": "Only review files matching these path prefixes" },
                     "post": { "type": "boolean", "description": "Whether to post the review to GitHub", "default": false },
                     "extra_instructions": { "type": "string", "description": "Extra context injected into the review prompt", "default": "" }
                 },
                 "required": ["pr_url", "paths"]
+            }),
+        ),
+        (
+            "review_file".into(),
+            "Review a single file from the filesystem. Path must be relative and must not contain '..'.".into(),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Path to the file to review (relative to CWD)" },
+                    "domain": { "type": "string", "description": "Review domain", "default": "code" },
+                    "language": { "type": "string", "description": "Optional language override" },
+                    "description": { "type": "string", "description": "Optional context for the review" },
+                    "extra_instructions": { "type": "string", "description": "Extra context injected into the review prompt", "default": "" }
+                },
+                "required": ["path"]
+            }),
+        ),
+        (
+            "review_glob".into(),
+            "Review all files matching a glob pattern. Patterns are relative to CWD.".into(),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "pattern": { "type": "string", "description": "Glob pattern, e.g. 'src/**/*.rs'" },
+                    "domain": { "type": "string", "description": "Review domain", "default": "code" },
+                    "extra_instructions": { "type": "string", "description": "Extra context injected into the review prompt", "default": "" }
+                },
+                "required": ["pattern"]
             }),
         ),
     ]
@@ -146,8 +207,71 @@ pub(crate) async fn handle_review_diff(
         source: ReviewSource::DiffText {
             diff: args.diff,
             title: args.title,
-            language_hint: args.language,
+            domain: args.domain,
+            language_hint: args.language.unwrap_or_default(),
             description: args.description,
+        },
+        options: ReviewOptions {
+            post_to_github: false,
+            paths: Vec::new(),
+            extra_instructions: args.extra_instructions,
+        },
+    };
+
+    let result = engine
+        .review(request)
+        .await
+        .map_err(|e| format!("Review failed: {e}"))?;
+
+    if args.format == "sarif" {
+        Ok(crate::sarif::to_sarif_value(&result))
+    } else {
+        serde_json::to_value(&result).map_err(|e| format!("Failed to serialize result: {e}"))
+    }
+}
+
+/// Handle the `review_file` tool.
+pub(crate) async fn handle_review_file(
+    engine: &ReviewEngine,
+    params: Value,
+) -> std::result::Result<Value, String> {
+    let args: ReviewFileArgs =
+        serde_json::from_value(params).map_err(|e| format!("Invalid arguments: {e}"))?;
+
+    let request = ReviewRequest {
+        source: ReviewSource::File {
+            path: args.path,
+            domain: args.domain,
+            language: args.language,
+            description: args.description,
+        },
+        options: ReviewOptions {
+            post_to_github: false,
+            paths: Vec::new(),
+            extra_instructions: args.extra_instructions,
+        },
+    };
+
+    let result = engine
+        .review(request)
+        .await
+        .map_err(|e| format!("Review failed: {e}"))?;
+
+    serde_json::to_value(&result).map_err(|e| format!("Failed to serialize result: {e}"))
+}
+
+/// Handle the `review_glob` tool.
+pub(crate) async fn handle_review_glob(
+    engine: &ReviewEngine,
+    params: Value,
+) -> std::result::Result<Value, String> {
+    let args: ReviewGlobArgs =
+        serde_json::from_value(params).map_err(|e| format!("Invalid arguments: {e}"))?;
+
+    let request = ReviewRequest {
+        source: ReviewSource::Glob {
+            pattern: args.pattern,
+            domain: args.domain,
         },
         options: ReviewOptions {
             post_to_github: false,

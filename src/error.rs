@@ -62,6 +62,10 @@ pub enum AgentError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// Stdin had no data within the timeout window.
+    #[error("Stdin timeout: no data received within 5 seconds")]
+    StdinTimeout,
+
     /// An HTTP error from `reqwest` — connection failure, DNS resolution,
     /// TLS handshake failure, etc.
     ///
@@ -110,7 +114,7 @@ impl AgentError {
                 msg.starts_with("AI API rate limit exceeded (429)")
                     || msg.starts_with("AI API server error (5")
             }
-            Self::Timeout(_) | Self::Http(_) => true,
+            Self::Timeout(_) | Self::Http(_) | Self::StdinTimeout => true,
             _ => false,
         }
     }

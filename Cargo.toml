@@ -48,6 +48,9 @@ percent-encoding = "2"
 # Output sanitization
 strip-ansi-escapes = "0.2"
 
+# File globbing
+glob = "0.3"
+
 [dev-dependencies]
 wiremock = "0.6"
 tempfile = "3"

@@ -21,13 +21,15 @@ pub struct Message {
 }
 
 /// Result returned by `AiClient::chat`, combining the response text with
-/// optional token-usage information.
+/// optional token-usage and finish-reason information.
 #[derive(Debug, Clone)]
 pub struct ChatOutput {
     /// The text content of the model's response.
     pub content: String,
     /// Token usage reported by the API, if available.
     pub usage: Option<Usage>,
+    /// Why the model stopped generating (e.g. "stop", "length").
+    pub finish_reason: Option<String>,
 }
 
 /// Response from the OpenAI-compatible chat completions endpoint.

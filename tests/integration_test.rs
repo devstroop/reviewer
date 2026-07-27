@@ -583,10 +583,7 @@ fn token_estimator_long_string() {
 
 #[test]
 fn language_unknown_extension() {
-    assert_eq!(
-        "Unknown",
-        reviewer::language::detect_language("file.xyz")
-    );
+    assert_eq!("Unknown", reviewer::language::detect_language("file.xyz"));
 }
 
 #[test]
