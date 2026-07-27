@@ -36,8 +36,7 @@ struct ResolvedSource {
     author: Option<String>,
     branch: Option<String>,
     base: Option<String>,
-    /// Language hint from the caller (e.g. MCP DiffText source).
-    /// Used as a fallback when file-extension detection yields "Unknown".
+    domain: String,
     language_hint: Option<String>,
 }
 
@@ -54,6 +53,7 @@ pub enum ReviewSource {
     DiffText {
         diff: String,
         title: String,
+        domain: String,
         language_hint: String,
         description: Option<String>,
     },
@@ -133,6 +133,12 @@ pub struct ReviewStats {
     /// `input_tokens_estimated + output_tokens_reported.unwrap_or(0)`.
     pub total_tokens_used: Option<usize>,
     pub latency_ms: u64,
+    /// AI model name used for this review.
+    pub model: String,
+    /// Prompt version (e.g. "1" initially, "{domain}/1" after Phase 1).
+    pub prompt_version: String,
+    /// Review domain (e.g. "code", "config", "policy").
+    pub domain: String,
 }
 
 // ── Engine ─────────────────────────────────────────────────────
@@ -218,12 +224,14 @@ impl ReviewEngine {
                     author: pr.user.as_ref().map(|u| u.login.clone()),
                     branch: Some(pr.head.r#ref),
                     base: Some(pr.base.r#ref),
+                    domain: "code".into(),
                     language_hint: None,
                 }
             }
             ReviewSource::DiffText {
                 diff,
                 title,
+                domain,
                 language_hint,
                 description,
             } => ResolvedSource {
@@ -236,6 +244,7 @@ impl ReviewEngine {
                 author: None,
                 branch: None,
                 base: None,
+                domain,
                 language_hint: Some(language_hint),
             },
         };
@@ -407,6 +416,9 @@ impl ReviewEngine {
                 output_tokens_reported,
                 total_tokens_used,
                 latency_ms,
+                model: self.ai.model_name().to_string(),
+                prompt_version: "1".into(),
+                domain: resolved.domain.clone(),
             },
         })
     }

@@ -29,6 +29,10 @@ pub struct AiClient {
 
 impl AiClient {
     /// Create a new AI client from the application settings.
+    pub fn model_name(&self) -> &str {
+        &self.model
+    }
+
     pub fn new(settings: &Settings) -> Result<Self> {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));

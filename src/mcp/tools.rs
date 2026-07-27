@@ -26,15 +26,17 @@ fn default_post() -> bool {
 pub(crate) struct ReviewDiffArgs {
     pub diff: String,
     pub title: String,
-    #[serde(default = "default_language")]
-    pub language: String,
+    #[serde(default = "default_domain")]
+    pub domain: String,
+    #[serde(default)]
+    pub language: Option<String>,
     pub description: Option<String>,
     #[serde(default)]
     pub extra_instructions: String,
 }
 
-fn default_language() -> String {
-    "Unknown".into()
+fn default_domain() -> String {
+    "code".into()
 }
 
 #[derive(Debug, Deserialize)]
@@ -74,7 +76,8 @@ pub(crate) fn tool_definitions() -> Vec<(String, String, Value)> {
                 "properties": {
                     "diff": { "type": "string", "description": "Raw unified diff text (git diff output)" },
                     "title": { "type": "string", "description": "A short title describing the change" },
-                    "language": { "type": "string", "description": "Primary language hint (e.g. 'Rust', 'Python')", "default": "Unknown" },
+                    "domain": { "type": "string", "description": "Review domain: 'code', 'config', 'policy', 'design', 'data'", "default": "code" },
+                    "language": { "type": "string", "description": "Primary programming language hint (e.g. 'Rust', 'Python'). Only used in 'code' domain.", "default": "Unknown" },
                     "description": { "type": "string", "description": "Optional longer description of the change" },
                     "extra_instructions": { "type": "string", "description": "Extra context injected into the review prompt", "default": "" }
                 },
@@ -146,7 +149,8 @@ pub(crate) async fn handle_review_diff(
         source: ReviewSource::DiffText {
             diff: args.diff,
             title: args.title,
-            language_hint: args.language,
+            domain: args.domain,
+            language_hint: args.language.unwrap_or_default(),
             description: args.description,
         },
         options: ReviewOptions {
