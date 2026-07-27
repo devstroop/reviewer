@@ -114,7 +114,7 @@ impl AgentError {
                 msg.starts_with("AI API rate limit exceeded (429)")
                     || msg.starts_with("AI API server error (5")
             }
-            Self::Timeout(_) | Self::Http(_) => true,
+            Self::Timeout(_) | Self::Http(_) | Self::StdinTimeout => true,
             _ => false,
         }
     }

@@ -62,7 +62,16 @@ impl PromptBuilder {
     }
 
     /// Try to load a prompt file from `prompts/{domain}/{file}`.
+    /// Domain is validated to prevent path traversal: only alphanumeric, `-`, `_`.
     fn load_prompt(domain: &str, file: &str) -> Option<String> {
+        if domain.is_empty()
+            || domain.contains('/')
+            || domain.contains('\\')
+            || domain.contains("..")
+            || !domain.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        {
+            return None;
+        }
         let path = Path::new("prompts").join(domain).join(file);
         std::fs::read_to_string(&path).ok()
     }
@@ -272,8 +281,9 @@ pub(crate) fn format_file_context(files: &[FileContent]) -> String {
     for f in files {
         out.push_str(&format!("### File: {} ({})\n\n", f.path, f.language));
         out.push_str(&format!("```{}\n", f.language.to_lowercase()));
-        out.push_str(&f.content);
-        if !f.content.ends_with('\n') {
+        let escaped = f.content.replace("```", "\\`\\`\\`");
+        out.push_str(&escaped);
+        if !escaped.ends_with('\n') {
             out.push('\n');
         }
         out.push_str("```\n\n");
