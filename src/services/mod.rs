@@ -5,11 +5,13 @@
 
 pub(crate) mod diff_service;
 pub(crate) mod github_service;
+pub(crate) mod json_extractor;
 pub(crate) mod prompt_builder;
 pub(crate) mod sanitize;
 
 pub(crate) use diff_service::DiffService;
 pub(crate) use github_service::GithubService;
+pub(crate) use json_extractor::JsonExtractor;
 pub(crate) use prompt_builder::PromptBuilder;
 pub(crate) use prompt_builder::PromptContext;
 pub(crate) use sanitize::sanitize_output;

@@ -28,9 +28,14 @@ pub struct AiClient {
 }
 
 impl AiClient {
-    /// Create a new AI client from the application settings.
+    /// The configured model name.
     pub fn model_name(&self) -> &str {
         &self.model
+    }
+
+    /// The configured max_completion_tokens value.
+    pub fn max_completion_tokens(&self) -> u32 {
+        self.max_completion_tokens
     }
 
     pub fn new(settings: &Settings) -> Result<Self> {
@@ -53,12 +58,28 @@ impl AiClient {
         })
     }
 
-    /// Send a chat completion request and return the response text with
-    /// optional token usage.
-    ///
-    /// The system message sets the AI's behavior, and the user message
-    /// contains the PR diff + metadata to review.
+    /// Send a chat completion request with the configured max_tokens.
     pub async fn chat(&self, system: &str, user: &str) -> Result<ChatOutput> {
+        self.chat_inner(system, user, self.max_completion_tokens).await
+    }
+
+    /// Send a chat completion request with an explicit max_tokens limit.
+    pub async fn chat_with_max_tokens(
+        &self,
+        system: &str,
+        user: &str,
+        max_tokens: u32,
+    ) -> Result<ChatOutput> {
+        self.chat_inner(system, user, max_tokens).await
+    }
+
+    /// Shared implementation for all chat variants.
+    async fn chat_inner(
+        &self,
+        system: &str,
+        user: &str,
+        max_tokens: u32,
+    ) -> Result<ChatOutput> {
         let url = format!("{}/chat/completions", self.api_base.trim_end_matches('/'));
 
         let request = ChatRequest {
@@ -74,7 +95,7 @@ impl AiClient {
                 },
             ],
             temperature: Some(self.temperature),
-            max_tokens: Some(self.max_completion_tokens),
+            max_tokens: Some(max_tokens),
         };
 
         let response = self
@@ -112,6 +133,10 @@ impl AiClient {
                                 )));
                             }
                         };
+                        let finish_reason = chat_resp
+                            .choices
+                            .first()
+                            .and_then(|c| c.finish_reason.clone());
                         let content = chat_resp
                             .choices
                             .into_iter()
@@ -121,6 +146,7 @@ impl AiClient {
                         Ok(ChatOutput {
                             content,
                             usage: chat_resp.usage,
+                            finish_reason,
                         })
                     } else {
                         let text = resp.text().await.unwrap_or_default();

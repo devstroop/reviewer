@@ -66,11 +66,6 @@ impl PromptBuilder {
         std::fs::read_to_string(&path).ok()
     }
 
-    /// Return the current domain.
-    pub(crate) fn domain(&self) -> &str {
-        &self.domain
-    }
-
     /// Return the system prompt for the current domain.
     pub(crate) fn system_prompt(&self) -> String {
         self.system_prompt.clone()

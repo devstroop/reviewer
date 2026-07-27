@@ -8,9 +8,12 @@
 use crate::ai::AiClient;
 use crate::config::Settings;
 use crate::error::{AgentError, Result};
-use crate::services::{DiffService, GithubService, PromptBuilder, PromptContext};
+use crate::services::{
+    json_extractor::{MIN_TOKENS_FOR_RETRY},
+    DiffService, GithubService, JsonExtractor, PromptBuilder, PromptContext,
+};
 use crate::tokens::estimate_tokens;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use tracing::info;
 
@@ -93,9 +96,30 @@ pub struct ReviewRequest {
 #[derive(Clone, Serialize)]
 pub struct ReviewResult {
     pub review_text: String,
+    pub findings: Vec<ReviewFinding>,
     pub pr_number: Option<u64>,
     pub pr_title: Option<String>,
     pub stats: ReviewStats,
+}
+
+/// A single structured finding extracted from the AI review.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReviewFinding {
+    /// Severity level: "high", "medium", "low", or "info".
+    pub severity: String,
+    /// File path relative to repo root (may be absent for project-wide findings).
+    #[serde(default)]
+    pub file: Option<String>,
+    /// Line number in the file (1-based, optional).
+    #[serde(default)]
+    pub line: Option<u64>,
+    /// Category such as "logic_error", "security", "performance".
+    pub category: String,
+    /// Human-readable description of the finding.
+    pub message: String,
+    /// Optional code suggestion.
+    #[serde(default)]
+    pub suggestion: Option<String>,
 }
 
 /// Statistics collected during a review run.
@@ -351,13 +375,79 @@ impl ReviewEngine {
         let input_tokens_estimated = crate::tokens::estimate_tokens(&user);
 
         // ── 6. AI analysis ─────────────────────────────────────
-        let chat_output = self.ai.chat(&system, &user).await?;
-        let sanitized = crate::services::sanitize_output(&chat_output.content);
-        let output_tokens_reported = chat_output.usage.as_ref().and_then(|u| u.completion_tokens);
+        let finish_reason_len = |co: &crate::ai::ChatOutput| {
+            co.finish_reason.as_deref() == Some("length")
+        };
+        let reported_tokens = |co: &crate::ai::ChatOutput| {
+            co.usage.as_ref().and_then(|u| u.completion_tokens)
+        };
 
-        // ── 7. Format output ────────────────────────────────────
-        // `review_text` always contains the raw sanitised Markdown.
-        let review_text = sanitized.clone();
+        let mut chat_output = self.ai.chat(&system, &user).await?;
+        let mut output_tokens_reported = reported_tokens(&chat_output);
+
+        // ── 6b. Retry on length truncation (once, with halved tokens) ──
+        if finish_reason_len(&chat_output)
+            && output_tokens_reported.unwrap_or(u32::MAX) >= MIN_TOKENS_FOR_RETRY
+        {
+            let half = (self.ai.max_completion_tokens() / 2).max(512);
+            tracing::warn!(
+                finish_reason = ?chat_output.finish_reason,
+                output_tokens = output_tokens_reported,
+                half_max_tokens = half,
+                "Response truncated — retrying with halved max_tokens"
+            );
+            chat_output = self.ai.chat_with_max_tokens(&system, &user, half).await?;
+            output_tokens_reported = reported_tokens(&chat_output);
+        }
+
+        let sanitized = crate::services::sanitize_output(&chat_output.content);
+
+        // ── 7. Extract structured findings ──────────────────────
+        // The AI is instructed (via system prompt) to output a JSON
+        // findings block before the markdown review.  Extraction is
+        // best-effort: valid findings are preserved; the markdown
+        // portion is always returned as `review_text`.
+        let extracted = JsonExtractor::extract(&sanitized);
+        let mut review_text = extracted.review_text;
+        let mut findings = extracted.findings;
+        let mut dropped_count = extracted.dropped_count;
+
+        // ── 7b. Repair pass (single attempt) ────────────────────
+        if dropped_count > 0 && !findings.is_empty() {
+            // Some findings were usable but others had validation errors.
+            // Attempt one repair round.
+            let repair_msg = format!(
+                "Your previous JSON had {dropped_count} malformed finding(s). \
+                 Fix and output ONLY the corrected JSON array. \
+                 Errors were: invalid severity, invalid category, missing \
+                 required fields ('severity', 'category', 'message'), or \
+                 empty 'message'."
+            );
+            tracing::warn!(dropped_count, "Attempting JSON repair pass");
+            if let Ok(repair_output) = self
+                .ai
+                .chat_with_max_tokens(&system, &repair_msg, 2000)
+                .await
+            {
+                let repair_extracted = JsonExtractor::extract(&repair_output.content);
+                if !repair_extracted.findings.is_empty() {
+                    findings = repair_extracted.findings;
+                    dropped_count = repair_extracted.dropped_count;
+                    review_text = repair_extracted.review_text;
+                } else {
+                    tracing::warn!("Repair pass produced no usable findings — keeping originals");
+                }
+            } else {
+                tracing::warn!("Repair pass failed — keeping original findings");
+            }
+        }
+
+        if dropped_count > 0 && findings.is_empty() {
+            tracing::warn!(
+                dropped_count,
+                "All findings were invalid — falling back to text-only review"
+            );
+        }
 
         // ── 8. Post (optional, always Markdown) ─────────────────
         if post_to_github {
@@ -402,6 +492,7 @@ impl ReviewEngine {
 
         Ok(ReviewResult {
             review_text,
+            findings,
             pr_number: resolved.pr_number,
             pr_title: resolved.pr_title,
             stats: ReviewStats {
