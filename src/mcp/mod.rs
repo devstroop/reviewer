@@ -192,8 +192,11 @@ fn handle_initialize(params: Option<&Value>) -> std::result::Result<Value, (i32,
         // Accept any version >= 2024-xx-xx (the spec uses 2024-11-05).
         // The year prefix determines compatibility — 2024, 2025, 2026+ are
         // all accepted as forward-compatible.
-        let year_ok = client_version.len() >= 4 &&
-            client_version[..4].parse::<i32>().unwrap_or(0) >= 2024;
+        let year = client_version
+            .get(..4)
+            .and_then(|s| s.parse::<i32>().ok())
+            .unwrap_or(0);
+        let year_ok = year >= 2024;
         if !year_ok {
             return Err((
                 INVALID_REQUEST,
