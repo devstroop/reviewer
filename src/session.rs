@@ -170,15 +170,13 @@ pub fn load_resume_state(session_id: &str) -> Result<ResumeState> {
         if line.is_empty() {
             continue;
         }
-        if let Ok(record) = serde_json::from_str::<SessionRecord>(line) {
-            if let SessionRecord::FileDone {
-                path, fingerprint, ..
-            } = record
-            {
-                state
-                    .completed_files
-                    .push(CompletedFile { path, fingerprint });
-            }
+        if let Ok(SessionRecord::FileDone {
+            path, fingerprint, ..
+        }) = serde_json::from_str::<SessionRecord>(line)
+        {
+            state
+                .completed_files
+                .push(CompletedFile { path, fingerprint });
         }
     }
 

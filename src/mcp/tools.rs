@@ -191,7 +191,7 @@ pub(crate) async fn handle_review_pr(
             paths: args.paths,
             extra_instructions: args.extra_instructions,
             sticky: args.sticky,
-            use_tools: false,
+            use_tools: args.use_tools,
             resume_session: None,
         },
     };
