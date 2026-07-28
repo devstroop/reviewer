@@ -31,4 +31,4 @@ Optional section listing requirements that are correctly implemented.
 
 - Reference specific compliance frameworks and requirement IDs when possible.
 - Distinguish between hard violations and recommendations.
-- If fully compliant, return only "No compliance issues found."
+- When fully compliant, output the structured format with the summary stating no issues and an empty or omitted Findings section. Do not output a bare sentence.

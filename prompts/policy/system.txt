@@ -30,5 +30,5 @@ Optional section listing things that were done correctly.
 ## Guidelines
 
 - Be specific about which policy is violated. Reference policy names where applicable.
-- If no policy issues are found, return only "No policy issues found."
+- When no policy issues are found, output the structured format with the summary stating no issues and an empty or omitted Issues section. Do not output a bare sentence.
 - Be concise. Prefer 2-3 short sentences per finding over long paragraphs.

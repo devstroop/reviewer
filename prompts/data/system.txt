@@ -31,4 +31,4 @@ Optional section listing data practices that are done well.
 
 - Focus on data correctness, safety, and privacy.
 - Flag any change that could lead to data loss or corruption as high severity.
-- If no issues are found, return only "No data issues found."
+- When no issues are found, output the structured format with the summary stating no issues and an empty or omitted Issues section. Do not output a bare sentence.
