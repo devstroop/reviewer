@@ -61,7 +61,13 @@ impl Session {
     pub fn new(model: &str, domain: &str, pr_url: Option<&str>) -> Result<Self> {
         let id = generate_session_id();
         let dir = Path::new(".reviewer").join("sessions");
-        std::fs::create_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).map_err(|e| {
+            AgentError::Config(format!(
+                "Cannot create sessions directory '{}': {}",
+                dir.display(),
+                e
+            ))
+        })?;
 
         let file_path = dir.join(format!("{}.jsonl", id));
         let file = std::fs::File::create(&file_path).map_err(AgentError::Io)?;
@@ -124,9 +130,19 @@ impl Session {
 
     fn write_record(&mut self, record: &SessionRecord) {
         if let Some(ref mut writer) = self.writer {
-            let line = serde_json::to_string(record).unwrap_or_default();
-            let _ = writeln!(writer, "{}", line);
-            let _ = writer.flush();
+            match serde_json::to_string(record) {
+                Ok(line) => {
+                    if let Err(e) = writeln!(writer, "{}", line) {
+                        tracing::warn!(error = %e, "Failed to write session record");
+                    }
+                    if let Err(e) = writer.flush() {
+                        tracing::warn!(error = %e, "Failed to flush session file");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to serialize session record");
+                }
+            }
         }
     }
 }
@@ -138,17 +154,30 @@ impl Drop for Session {
 }
 
 /// Compute a fingerprint for a file review (used for resume dedup).
+/// Uses SHA-256 for deterministic, cross-session stable hashing.
 pub fn file_fingerprint(mode: &str, path: &str, diff_hash: &str) -> String {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    mode.hash(&mut hasher);
-    path.hash(&mut hasher);
-    diff_hash.hash(&mut hasher);
-    format!("{:x}", hasher.finish())
+    use sha2::Digest;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(mode.as_bytes());
+    hasher.update(b"\x00");
+    hasher.update(path.as_bytes());
+    hasher.update(b"\x00");
+    hasher.update(diff_hash.as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 /// Load a previous session state for resume.
 pub fn load_resume_state(session_id: &str) -> Result<ResumeState> {
+    // Validate session_id to prevent path traversal
+    if !session_id
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(AgentError::Config(format!(
+            "Invalid session ID '{}': must be alphanumeric, dash, or underscore only",
+            session_id
+        )));
+    }
     let path = Path::new(".reviewer")
         .join("sessions")
         .join(format!("{}.jsonl", session_id));

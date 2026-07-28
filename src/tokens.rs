@@ -10,14 +10,18 @@ use tracing::warn;
 /// Estimate the number of tokens in a text string.
 ///
 /// Uses the `cl100k_base` BPE encoding from tiktoken for accurate counts.
-/// The encoding is cached globally by the tiktoken crate.
+/// Falls back to a heuristic (3.5 chars/token) if tiktoken is unavailable.
 pub fn estimate_tokens(text: &str) -> usize {
     if text.is_empty() {
         return 0;
     }
-    tiktoken::get_encoding("cl100k_base")
-        .expect("Failed to get tiktoken encoding")
-        .count(text)
+    match tiktoken::get_encoding("cl100k_base") {
+        Some(enc) => enc.count(text),
+        None => {
+            warn!("tiktoken encoding unavailable, using heuristic");
+            (text.len() * 2) / 7
+        }
+    }
 }
 
 /// Drop files from `files` (largest first) until the total estimated token count

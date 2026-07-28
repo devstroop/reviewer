@@ -789,11 +789,12 @@ impl ReviewEngine {
         let mut handles = Vec::with_capacity(prompts.len());
 
         for p in prompts {
-            let _permit = self.concurrency_sem.acquire().await;
+            let permit = self.concurrency_sem.clone().acquire_owned().await;
             let ai = ai.clone();
-            handles.push(tokio::spawn(
-                async move { ai.chat(&p.system, &p.user).await },
-            ));
+            handles.push(tokio::spawn(async move {
+                let _held = permit;
+                ai.chat(&p.system, &p.user).await
+            }));
         }
 
         // Phase 3: collect and merge results.

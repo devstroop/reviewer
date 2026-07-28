@@ -1,14 +1,13 @@
 [
-  {"pattern": "**/*.rs",          "files": ["rust.md"]},
-  {"pattern": "**/*.py",          "files": ["python.md"]},
-  {"pattern": "**/*.go",          "files": ["go.md"]},
-  {"pattern": "**/*.{ts,tsx,js,jsx}", "files": ["ts_js.md"]},
-  {"pattern": "**/*.java",        "files": ["java.md"]},
-  {"pattern": "**/*.{c,h}",       "files": ["c_cpp.md"]},
-  {"pattern": "**/*.{cpp,hpp,cc}", "files": ["c_cpp.md"]},
+  {"pattern": "**/*.rs",          "files": ["rust.md", "security.md"]},
+  {"pattern": "**/*.py",          "files": ["python.md", "security.md"]},
+  {"pattern": "**/*.go",          "files": ["go.md", "security.md"]},
+  {"pattern": "**/*.{ts,tsx,js,jsx}", "files": ["ts_js.md", "security.md"]},
+  {"pattern": "**/*.java",        "files": ["java.md", "security.md"]},
+  {"pattern": "**/*.{c,h}",       "files": ["c_cpp.md", "security.md"]},
+  {"pattern": "**/*.{cpp,hpp,cc}", "files": ["c_cpp.md", "security.md"]},
   {"pattern": "**/*.{yaml,yml}",  "files": ["yaml.md"]},
-  {"pattern": "**/Dockerfile",    "files": ["docker.md"]},
-  {"pattern": "**/*.tf",          "files": ["terraform.md"]},
-  {"pattern": "**/*.{kt,kts}",    "files": ["kotlin.md"]},
-  {"pattern": "**/*.rs",          "files": ["security.md"]}
+  {"pattern": "**/Dockerfile",    "files": ["docker.md", "security.md"]},
+  {"pattern": "**/*.tf",          "files": ["terraform.md", "security.md"]},
+  {"pattern": "**/*.{kt,kts}",    "files": ["kotlin.md", "security.md"]}
 ]

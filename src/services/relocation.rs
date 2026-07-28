@@ -63,16 +63,16 @@ pub(crate) async fn resolve_line_numbers(
 fn match_from_hunks(
     diff_file: &DiffFile,
     _message: &str,
-    _suggestion: &Option<String>,
+    suggestion: &Option<String>,
 ) -> Option<u64> {
     // Collect all new-side lines (context + added) with their line numbers
-    let mut new_lines: Vec<(u64, &str)> = Vec::new();
+    let mut new_lines: Vec<(u64, String)> = Vec::new();
     for hunk in &diff_file.hunks {
         let mut new_line = parse_hunk_new_start(&hunk.header);
         for line in &hunk.lines {
             match line.kind {
                 DiffLineKind::Context | DiffLineKind::Added => {
-                    new_lines.push((new_line, &line.content));
+                    new_lines.push((new_line, line.content.trim().to_string()));
                     new_line += 1;
                 }
                 DiffLineKind::Removed => {}
@@ -80,14 +80,37 @@ fn match_from_hunks(
         }
     }
 
-    // Nothing matched — caller falls through to AI re-location
-    if new_lines.is_empty() {
-        return None;
+    // Try to match suggestion text against lines
+    if let Some(sugg) = suggestion {
+        let sug_lines: Vec<&str> = sugg
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty())
+            .collect();
+        if !sug_lines.is_empty() && sug_lines.len() <= new_lines.len() {
+            // Sliding window match
+            for window in new_lines.windows(sug_lines.len()) {
+                let matches = window
+                    .iter()
+                    .zip(sug_lines.iter())
+                    .all(|((_, line), sug)| line == sug);
+                if matches {
+                    return Some(window[0].0);
+                }
+            }
+        }
     }
 
-    // Return the first line for now — full message/suggestion matching
-    // would require more sophisticated analysis.
-    Some(new_lines[0].0)
+    // Fallback: try to match message text against lines
+    if !new_lines.is_empty() {
+        for (line_num, line_content) in &new_lines {
+            if line_content.contains(_message) || _message.contains(line_content) {
+                return Some(*line_num);
+            }
+        }
+    }
+
+    None
 }
 
 /// Pass 3: Ask the AI to locate the snippet in the diff.
@@ -244,15 +267,16 @@ mod tests {
             },
         ];
         let file = make_diff_file("main.rs", vec![make_hunk(1, 1, lines)]);
-        let result = match_from_hunks(&file, "test", &Some("fix".into()));
-        assert!(result.is_some());
-        assert_eq!(result.unwrap(), 1);
+        // Suggestion text matches one of the hunk lines
+        let result = match_from_hunks(&file, "test", &Some("let x = 1;".into()));
+        assert!(result.is_some(), "Should find matching line in hunk");
+        assert_eq!(result.unwrap(), 2);
     }
 
     #[test]
     fn test_match_from_hunks_empty_returns_none() {
         let file = make_diff_file("empty.rs", vec![]);
-        let result = match_from_hunks(&file, "test", &Some("fix".into()));
+        let result = match_from_hunks(&file, "test", &Some("anything".into()));
         assert!(result.is_none());
     }
 }

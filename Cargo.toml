@@ -59,6 +59,9 @@ git2 = "0.21"
 # Token counting (pure Rust, no C deps)
 tiktoken = "3"
 
+# Deterministic hashing for session fingerprints
+sha2 = "0.10"
+
 [dev-dependencies]
 wiremock = "0.6"
 tempfile = "3"
