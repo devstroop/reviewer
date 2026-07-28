@@ -6,3 +6,8 @@
 .vscode/
 .idea/
 *.toml.bak
+
+
+# Development files
+REVIEW.md
+ISSUES.md

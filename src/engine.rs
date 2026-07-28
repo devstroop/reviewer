@@ -369,8 +369,24 @@ impl ReviewEngine {
 
         // ── 2. Content resolution + prompt building ────────────
         let pb = PromptBuilder::new(&resolved.domain);
-        let system = pb.system_prompt();
-        let system_tokens_estimated = pb.system_prompt_tokens();
+
+        // Parse diff first so we can resolve rules from the actual file list.
+        // This avoids double-parsing (once for rules, once for prompt building).
+        let (diff_files_changed, diff_parsed) =
+            if resolved.file_contents.is_some() || resolved.raw_diff.is_empty() {
+                (0, vec![])
+            } else {
+                self.diff_svc
+                .parse_and_filter(&resolved.raw_diff)
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "Diff parsing failed — no rules will be resolved");
+                    (0, vec![])
+                })
+            };
+
+        let rules = pb.resolve_rules(&diff_parsed);
+        let system = pb.system_prompt(&rules.text);
+        let system_tokens_estimated = pb.system_prompt_tokens(&rules.text);
 
         let make_ctx = || PromptContext {
             title: resolved.pr_title.as_deref().unwrap_or("(untitled)"),
@@ -399,15 +415,18 @@ impl ReviewEngine {
                 &extra,
                 &path_filter,
                 self.diff_svc.max_tokens(),
+                system_tokens_estimated,
             )
         } else {
-            Self::build_diff_prompt(
-                &resolved.raw_diff,
+            Self::build_diff_prompt_from_parsed(
+                diff_files_changed,
+                &diff_parsed,
                 &pb,
                 &make_ctx(),
                 &extra,
                 &path_filter,
                 &self.diff_svc,
+                system_tokens_estimated,
             )
         };
 
@@ -548,43 +567,42 @@ impl ReviewEngine {
         })
     }
 
-    /// Build the user prompt from diff content, applying filters and budget.
-    fn build_diff_prompt(
-        raw_diff: &str,
+    /// Build the user prompt from already-parsed diff files, applying filters and budget.
+    #[allow(clippy::too_many_arguments)]
+    fn build_diff_prompt_from_parsed(
+        files_changed: usize,
+        filtered: &[crate::diff::DiffFile],
         pb: &PromptBuilder,
         ctx: &PromptContext<'_>,
         extra: &str,
         path_filter: &[String],
         diff_svc: &DiffService,
+        system_tokens: usize,
     ) -> (usize, usize, usize, usize, usize, String, usize) {
-        // Parse + filter
-        let (files_changed, filtered) = diff_svc
-            .parse_and_filter(raw_diff)
-            .unwrap_or_else(|_| (0, vec![]));
         let files_skipped = files_changed.saturating_sub(filtered.len());
 
         // Path filter
         let pre_path = filtered.len();
-        let after_path_filter: Vec<_> = if path_filter.is_empty() {
-            filtered
+        let after_path_filter: Vec<crate::diff::DiffFile> = if path_filter.is_empty() {
+            filtered.to_vec()
         } else {
             filtered
-                .into_iter()
+                .iter()
                 .filter(|f| {
                     path_filter
                         .iter()
                         .any(|p| !p.is_empty() && f.filename.starts_with(p))
                 })
+                .cloned()
                 .collect()
         };
         let files_path_filtered = pre_path.saturating_sub(after_path_filter.len());
 
         // Budget truncation
         let mut budgeted = after_path_filter;
-        let system_overhead = estimate_tokens(include_str!("../prompts/code/system.txt"));
         let overhead = PROMPT_OVERHEAD_BASELINE
             + PROMPT_OVERHEAD_PER_FILE * budgeted.len()
-            + system_overhead
+            + system_tokens
             + if extra.is_empty() {
                 0
             } else {
@@ -616,6 +634,7 @@ impl ReviewEngine {
         extra: &str,
         path_filter: &[String],
         max_tokens: usize,
+        system_tokens: usize,
     ) -> (usize, usize, usize, usize, usize, String, usize) {
         let files_changed = file_contents.len();
 
@@ -639,10 +658,9 @@ impl ReviewEngine {
 
         // Budget truncation
         let mut budgeted = after_path_filter;
-        let system_overhead = estimate_tokens(include_str!("../prompts/code/system.txt"));
         let overhead = PROMPT_OVERHEAD_BASELINE
             + PROMPT_OVERHEAD_PER_FILE * budgeted.len()
-            + system_overhead
+            + system_tokens
             + if extra.is_empty() {
                 0
             } else {

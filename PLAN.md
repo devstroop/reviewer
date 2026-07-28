@@ -63,52 +63,93 @@ PR-Agent (CodiumAI), and GitLens.
 ## Phase 1 — Rule system (domain-generic)
 
 **Goal:** Inject domain/language/technology-specific review guidelines into
-AI prompts. Adapted from OCR's rule system — simplified for v1.
+AI prompts. Adapted from OCR's rule system.
 
 ### Design
 
 ```
 prompts/{domain}/rules/
-├── rust.md          # matches **/*.rs
-├── python.md        # matches **/*.py
-├── rust-security.md # matches **/*.rs  (cross-cutting, injected alongside rust.md)
-└── yaml.md          # matches **/*.yaml
+├── rules.json        ← index file (pattern → file mapping)
+├── rust.md           ← **/*.rs
+├── python.md         ← **/*.py
+├── rust-security.md  ← **/*.rs  (cross-cutting, stacked with rust.md)
+├── yaml.md           ← **/*.yaml
+└── ...
 ```
 
-**Resolution:**
-- Single layer: scan `prompts/{domain}/rules/` at startup
-- Each file named `<name>.md` — matched by glob pattern embedded in filename
-  (e.g., `rust.md` → `**/*.rs` from a sidecar `.rules.json` index)
-- Alternative: `rules.json` index file alongside rule files:
+**Built-in rules** — shipped in `prompts/{domain}/rules/` and embedded via
+`include_str!`. Initially ~10 covering the most common languages, extended
+over time toward OCR's ~27.
+
+**Index format:**
 
 ```json
 [
-  {"pattern": "**/*.rs", "file": "rust.md"},
-  {"pattern": "**/*.py", "file": "python.md"},
-  {"pattern": "**/*.yaml", "file": "yaml.md"}
+  {"pattern": "**/*.rs",      "files": ["rust.md", "security.md"]},
+  {"pattern": "**/*.py",      "files": ["python.md"]},
+  {"pattern": "**/*.yaml",    "files": ["yaml.md"]},
+  {"pattern": "**/Dockerfile", "files": ["docker.md"]}
 ]
 ```
 
+Multiple `files` per entry enables stacking (e.g., Rust + security).
+First-match-wins per pattern, but a single match loads all listed files.
+
+**Per-project custom rules** — scanned from working directory:
+
+```
+.reviewer/rules.json    ← optional, merged after built-in rules
+```
+
+If present, its entries extend (not replace) the built-in set. This gives
+teams a mechanism to add project-specific rules without modifying shipped
+prompt files. Same schema as the built-in index.
+
 **Injection:**
 - New `{system_rule}` placeholder in system prompt templates
-- `PromptBuilder` resolves matched rules per-file and injects into prompt
-- Multiple rules can match a single file (e.g., `rust.md` + `security.md`)
-- OCR-style first-match-wins per-index, but multiple index entries can stack
+- `PromptBuilder` resolves rules per-file and injects matched content
+- Multiple rule files can combine (e.g., language + security + policy)
 
 **What changes:**
 | File | Change |
 |---|---|
-| `src/services/prompt_builder.rs` | Add `resolve_rules(domain, files) -> Vec<String>`, inject via `{system_rule}` |
-| `prompts/code/system.txt` | Add `{system_rule}` placeholder before output format section |
+| `src/services/prompt_builder.rs` | `resolve_rules(domain, files) -> Vec<String>`, inject via `{system_rule}` |
+| `prompts/code/system.txt` | Add `{system_rule}` placeholder |
 | `prompts/config/system.txt` | Same |
 | `src/engine.rs` | Pass resolved rules through to PromptBuilder |
-| `prompts/code/rules/` | Initial set of rule files (ported from OCR's embedded rules) |
+| `prompts/code/rules/` | Initial rule files + index |
+| `prompts/config/rules/` | Config-domain rule files (schema, security baseline) |
 
-### Open questions
-- How many initial rule files to ship? Minimum: Rust, Python, Go, JS/TS,
-  YAML, Dockerfile, Terraform (7). Full OCR parity: ~27.
-- Index format: embedded `.rules.json` or filename-as-pattern convention?
-  Filename convention is simpler but less flexible for multi-pattern rules.
+### Testing
+- Unit tests: rule resolution by pattern, rule stacking, missing index,
+  empty domain, index with non-existent files
+- Integration: full pipeline with rules injected, verify prompt contains
+  rule content
+
+---
+
+## Phase 1b — Per-repo config
+
+**Goal:** Allow teams to customize reviewer behavior per repository without
+modifying `action.yml`. Adapted from OCR's `.pr_agent.toml` and PR-Agent's
+`.pr_agent.toml` patterns.
+
+### Design
+
+The config search path already includes
+`$GITHUB_WORKSPACE/.github/reviewer.toml` (first position) but no feature
+uses it. This phase wires it up:
+
+- If `.github/reviewer.toml` exists (or `.reviewer/config.toml`), merge it
+  into settings with the same env-overlay logic
+- Per-repo overrides are limited to a safe subset: `review.extra_instructions`,
+  `review.max_input_tokens`, `review.max_diff_files`, `ai.model`,
+  `ai.temperature` — nothing that affects binary behavior or security
+
+**What changes:**
+| File | Change |
+|---|---|
+| `src/config.rs` | Document the per-repo search path, validate overridable keys |
 
 ---
 
@@ -129,87 +170,80 @@ New module: src/git/
 **`LocalRepo` API:**
 
 ```rust
-pub struct LocalRepo {
-    repo: gix::Repository,
-}
+pub struct LocalRepo { repo: gix::Repository }
 
 impl LocalRepo {
     pub fn open(path: &str) -> Result<Self>;
     pub fn diff_between(&self, base: &str, head: &str) -> Result<String>;
     pub fn file_at(&self, commit: &str, path: &str) -> Result<String>;
     pub fn grep(&self, pattern: &str, paths: &[&str]) -> Result<Vec<Match>>;
-    pub fn mergebased_diff(&self, base: &str, head: &str) -> Result<String>;
-}
-```
-
-**New ReviewSource:**
-
-```rust
-pub enum ReviewSource {
-    // ... existing variants ...
-    LocalBranch {
-        repo_path: String,
-        base_ref: String,
-        head_ref: String,
-    },
-}
-```
-
-**Code search tool** (MCP + CLI):
-
-```rust
-pub struct CodeSearchArgs {
-    pub pattern: String,
-    pub path: Option<String>,
 }
 ```
 
 **Hybrid read path:**
 - `ReviewSource::PrUrl` checks if `--repo-path` was provided
-- If yes: use `LocalRepo::diff_between()` for diff, `LocalRepo::file_at()` for
-  full content → no GitHub API calls for reading
-- If no: fall back to current GitHub API diff (CI ephemeral runners)
-- GitHub API always used for **posting** reviews/comments
+- If yes: `LocalRepo` computes diff + file content locally (zero API calls)
+- If no: fall back to GitHub API (CI ephemeral runners)
+- GitHub API always used for **posting**
+
+**New CLI flags:** `--repo-path`, `--base-ref`, `--head-ref`
 
 **What changes:**
 | File | Change |
 |---|---|
 | `Cargo.toml` | Add `gix = "0.86"` |
-| `src/git/mod.rs` | New module |
+| `src/git/mod.rs` | New |
 | `src/git/local.rs` | New |
 | `src/git/search.rs` | New |
-| `src/engine.rs` | New `ReviewSource::LocalBranch`, hybrid read in `resolve_source()` |
-| `src/main.rs` | `--repo-path`, `--from-ref`, `--to-ref` flags |
-| `src/mcp/tools.rs` | New `review_local_pr` tool (or extend `review_pr` with optional repo_path) |
-| `src/config.rs` | Optional `[git] repo_path` setting |
+| `src/engine.rs` | Hybrid read in source resolution |
+| `src/main.rs` | CLI flags |
+| `src/mcp/tools.rs` | `repo_path` optional param on existing tools |
+| `src/config.rs` | `[git] repo_path` setting |
 
-### Non-goals (Phase 2)
-- `code_search` LLM tool (deferred to Phase 3 tool loop)
-- `file_read` tool (same)
-- Per-key caching (single repo open at a time is fine for v1)
+### Testing
+- Unit: LocalRepo diff/file_at/grep with known repos
+- Integration: wiremock for GitHub fallback path, real filesystem for gix path
+- No network in CI (all git operations on test fixtures)
 
 ---
 
-## Phase 3 — LLM tool loop (domain-generic engine)
+## Phase 3 — LLM tool loop + accurate token counting
 
 **Goal:** Replace the single-shot AI call with an interactive loop where
 the AI can call tools to gather more context before producing findings.
 
-### Design
+This is the highest-impact change. It also requires accurate token counting
+to manage memory compression correctly — the current 3.5 chars/token
+heuristic is too imprecise for the 60%/80% compression thresholds.
 
-**Core change:** `ReviewEngine::review()` grows a loop:
+### Prerequisite: accurate token counting
+
+Switch from heuristic to `tiktoken-rs` (pure Rust, no C deps):
+
+```rust
+use tiktoken_rs::cl100k_base;
+
+pub fn estimate_tokens(text: &str) -> usize {
+    let bpe = cl100k_base().unwrap();
+    bpe.encode_with_special_tokens(text).len()
+}
+```
+
+This changes the token budget calculation throughout the pipeline — input
+estimates, overhead calculations, truncation decisions all become accurate.
+
+### Core change: tool loop
 
 ```
 1. Build system + user prompt (as today)
 2. Send to AI with tool definitions attached
 3. If AI calls a tool:
-   a. Execute tool (file_read, code_search, etc.)
+   a. Execute tool
    b. Append result to conversation
    c. Send back to AI
    d. Repeat
 4. If AI calls task_done → exit loop
-5. If AI returns text without tool calls → that's the review
-6. Max rounds configurable (default 10)
+5. Max rounds configurable (default 10)
 ```
 
 **Tool definitions (per-domain):**
@@ -220,24 +254,12 @@ the AI can call tools to gather more context before producing findings.
 | `code_search` | ✅ | ❌ | ❌ |
 | `file_find` | ✅ | ✅ | ✅ |
 | `file_read_diff` | ✅ | ❌ | ❌ |
-| `task_done` | ✅ | ✅ | ✅ |
 | `submit_finding` | ✅ | ✅ | ✅ |
+| `task_done` | ✅ | ✅ | ✅ |
 
 **Architecture:**
 
 ```rust
-pub struct ReviewEngine {
-    // Existing fields...
-    tools: ToolRegistry,           // new
-    max_tool_rounds: usize,        // new (default 10)
-    max_consecutive_empty: usize,  // new (default 3)
-}
-
-struct ToolRegistry {
-    domain: String,
-    tools: HashMap<String, Box<dyn Tool>>,
-}
-
 #[async_trait]
 trait Tool {
     fn name(&self) -> &str;
@@ -247,22 +269,22 @@ trait Tool {
 }
 ```
 
-**Tool implementations:**
+**AI client changes** (understated in v1 of this plan):
 
-- **`file_read`**: reads from gix (code domain) or filesystem (other domains).
-  Args: `path`, `start_line`?, `end_line`?. Max 500 lines.
-- **`code_search`**: git grep via gix. Args: `pattern`, `case_sensitive?`,
-  `file_patterns?`. Max 100 results.
-- **`file_find`**: find files by name. Args: `name`, `case_sensitive?`.
-  Max 100 results.
-- **`file_read_diff`**: returns diff for a specific file from the parsed
-  diff map. Args: `path`.
-- **`submit_finding`**: submits a finding mid-review. Args: `severity`,
-  `category`, `message`, `file`?, `line`?, `suggestion`?.
-- **`task_done`**: signals completion. No args.
+The current `AiClient::chat()` sends `[{role:"system"},{role:"user"}]` and
+receives `{role:"assistant", content:"..."}`. Tool calls require:
+
+- **Request side:** new `tools` field on the chat request body. Each tool
+  has a name, description, and JSON schema for arguments.
+- **Response side:** detect `finish_reason: "tool_calls"`. The response
+  carries `tool_calls: [{id, type, function: {name, arguments}}]` instead
+  of (or alongside) `content`.
+- **Conversation append:** after executing a tool, append
+  `{role: "tool", tool_call_id, content}` to the message list.
+- **New types in `src/ai/types.rs`:** `ToolDef`, `ToolCall`, `ToolResult`.
 
 **Memory compression** (adapted from OCR):
-- Track total tokens per conversation round
+- Track total tokens per round using accurate `tiktoken` counts
 - At 60% of `max_input_tokens`: trigger background compression
 - At 80%: trigger synchronous compression
 - Compression: summarize older rounds into a `<previous_review_summary>`
@@ -271,37 +293,39 @@ trait Tool {
 **What changes:**
 | File | Change |
 |---|---|
-| `src/engine.rs` | Add tool loop, ToolRegistry, tool execution |
+| `Cargo.toml` | Add `tiktoken-rs` |
+| `src/tokens.rs` | Replace heuristic with `tiktoken` |
+| `src/ai/types.rs` | Add `ToolDef`, `ToolCall`, `ToolResult`, updated `ChatRequest`, `ChatOutput` |
+| `src/ai/mod.rs` | Support tool-bearing requests, tool-call responses, finish_reason branching |
+| `src/engine.rs` | Add tool loop, ToolRegistry, tool dispatch, compression |
 | `src/tools/mod.rs` | Tool trait, registry, domain-specific tool lists |
 | `src/tools/file_read.rs` | New |
-| `src/tools/code_search.rs` | New |
+| `src/tools/code_search.rs` | New (uses gix — code domain only) |
 | `src/tools/file_find.rs` | New |
+| `src/tools/file_read_diff.rs` | New |
 | `src/tools/submit_finding.rs` | New |
 | `src/tools/task_done.rs` | New |
-| `src/ai/mod.rs` | Support tool call request/response in chat API |
-| `src/ai/types.rs` | Add `ToolCall`, `ToolResult` message types |
 | `prompts/code/system.txt` | Add tool descriptions and schemas |
 | `prompts/config/system.txt` | Same (config-domain tools only) |
+| `src/config.rs` | `max_tool_rounds` setting, tool enable/disable per domain |
 
-### Open questions
-- Should `code_comment` (OCR-style async finding submission) be supported
-  alongside `submit_finding`? The sync version is simpler for v1.
-- OCR uses `MaxToolRequestTimes` per file (default ~30). What's right for
-  our token budget? 10 rounds with 16k tokens fits most use cases.
-- OCR has async comment resolution via `CommentWorkerPool`. Do we need it
-  in v1? Probably not — synchronous per-tool execution is simpler.
+### Testing
+- Unit: ToolRegistry construction, tool dispatch, tool execute
+- Unit: `tiktoken` vs heuristic comparison (validate no regressions in
+  budget behavior)
+- Integration: wiremock serves tool-call responses, verify loop executes
+  tools and returns combined result
 
 ---
 
 ## Phase 4 — Post-hoc accuracy improvements
 
 **Goal:** Reduce false positives and fix misaligned line numbers after the
-main review loop.
+main review loop. Works with both single-shot and tool-loop modes.
 
 ### Review filter (FP detection)
 
-After the tool loop completes (or even in single-shot mode), send collected
-findings to the AI for verification:
+After findings are collected, send them to the AI for verification:
 
 ```rust
 fn review_filter(findings: &[Finding], diff: &str) -> Result<Vec<Finding>> {
@@ -312,71 +336,61 @@ fn review_filter(findings: &[Finding], diff: &str) -> Result<Vec<Finding>> {
          Return only the indices of incorrect findings as a JSON array."
     );
     let response = ai.chat(&system_prompt, &prompt).await?;
-    parse_indices(&response).map(|indices| {
-        findings.iter().enumerate()
-            .filter(|(i, _)| !indices.contains(i))
-            .map(|(_, f)| f.clone())
-            .collect()
-    })
+    parse_indices(&response)
 }
 ```
 
 ### Re-location (line number correction)
 
-When a finding has a suggestion but no valid line numbers, attempt to
-match `existing_code` against the diff:
+When a finding has no valid line numbers, attempt to match `existing_code`
+against the diff through three passes:
 
-1. Try direct hunk matching (normalized string comparison)
-2. Try full file content matching
-3. If both fail, send to AI for re-location:
+1. Direct hunk matching (normalized string comparison, new-side then old-side)
+2. Full file content scanning (sliding window, skipping blank lines)
+3. LLM re-location (send diff + existing_code to AI, extract corrected snippet,
+   retry matching)
 
-```rust
-fn relocate(existing_code: &str, diff: &str) -> Result<(u64, u64)> {
-    let prompt = format!(
-        "Given this diff:\n```\n{diff}\n```\n\n\
-         Find the exact lines for this code:\n```\n{existing_code}\n```\n\n\
-         Return `start_line` and `end_line` as JSON."
-    );
-    // Parse response, update finding
-}
-```
+Passes 1 and 2 need no AI call and are fast. Pass 3 is a fallback.
 
 **What changes:**
 | File | Change |
 |---|---|
-| `src/engine.rs` | Post-processing step after AI analysis |
+| `src/engine.rs` | Post-processing step after AI analysis (always runs) |
 | `src/services/review_filter.rs` | New |
-| `src/services/relocation.rs` | New (or extend existing diff resolver) |
-| `src/diff.rs` | Add line-matching utilities (normalize, sliding window) |
+| `src/services/relocation.rs` | New |
+| `src/diff.rs` | Add `resolve_line_numbers()`, `normalize_line()`, `match_consecutive()` |
+
+### Testing
+- Unit: line matching with known hunks, edge cases (renamed, binary, empty)
+- Unit: review filter with known FP/FN cases
+- Integration: full pipeline with review filter, verify FP removed
 
 ---
 
-## Phase 5 — Sticky summaries & history
+## Phase 5 — Sticky summaries & history (GitHub posting)
 
 **Goal:** Replace one-shot comment posting with updatable, history-aware
-comments that follow PR-Agent's pattern.
+comments. GitHub-only — MCP returns results directly and doesn't need
+this.
 
 ### Sticky review comment
 
-Instead of posting a new comment each run, find and update the existing one:
+Find existing comment by marker → edit in place:
 
 ```
-Run 1: Post comment "## 🔍 Review\n(initial review)"
-Run 2: Find comment by marker → edit in place → "## 🔍 Review (updated)
-        (updated review)"
+Run 1: "## Review (initial analysis)"
+Run 2: locate comment by HTML marker → edit → "## Review (updated)"
 ```
 
 ### History accumulation
 
-For inline code suggestions (future), maintain a growing `<details>` history:
-
 ```
-## 🔍 Review (updated)
+## Review (updated)
 
 (new findings table)
 
 <details>
-<summary>Previous suggestions (2 earlier runs)</summary>
+<summary>Previous results (2 earlier runs)</summary>
 
 (run 2 table)
 (run 1 table)
@@ -386,63 +400,98 @@ For inline code suggestions (future), maintain a growing `<details>` history:
 **What changes:**
 | File | Change |
 |---|---|
-| `src/github/mod.rs` | Add `edit_comment()`, `find_comment()` API methods |
-| `src/github/types.rs` | Add comment search/edit types |
-| `src/services/github_service.rs` | Add sticky comment logic, optional history |
-| `src/engine.rs` | Pass run context for history tracking |
+| `src/github/mod.rs` | `find_comment(marker)`, `edit_comment(id, body)` |
+| `src/github/types.rs` | Comment search/edit types |
+| `src/services/github_service.rs` | Sticky logic, optional history |
+| `src/engine.rs` | Pass run counter for history |
+
+### Testing
+- Wiremock tests for comment search, edit, create
+- Integration: verify marker-based find/edit cycle
 
 ---
 
 ## Phase 6 — Per-file concurrency
 
-**Goal:** Review multiple files in parallel, with semaphore-throttled
-goroutines (adapted from OCR).
+**Goal:** Review multiple files in parallel instead of sequentially.
 
-### Design
+### Challenge
 
-```rust
-// In ReviewEngine or a new Dispatcher
-let semaphore = Semaphore::new(max_concurrent); // default 4
+The current `ReviewEngine::review()` processes all files in a single
+synchronous pipeline:
 
-let handles: Vec<_> = files.iter().map(|file| {
-    let permit = semaphore.acquire().await;
-    tokio::spawn(async move {
-        let _permit = permit;
-        review_single_file(file).await
-    })
-}).collect();
-
-let results = futures::future::join_all(handles).await;
 ```
+1. Resolve source (single diff or file list)
+2. Build single prompt from ALL files
+3. Single AI call
+4. Post single result
+```
+
+For concurrency, this must become:
+
+```
+Resolve source → split into per-file requests
+                    │
+       ┌────────────┼────────────┐
+       ▼            ▼            ▼
+  review file   review file  review file
+  (sub-engine)  (sub-engine) (sub-engine)
+       │            │            │
+       └────────────┼────────────┘
+                    ▼
+              merge results
+```
+
+This means the engine needs two modes:
+- **Batch mode** (current): all files in one prompt — cheaper, sees
+  cross-file context
+- **Per-file mode** (new, concurrent): each file independently —
+  costlier but parallel, enables the tool loop per file
+
+The `ReviewSource` determines which mode applies:
+- PRs with small diffs → batch mode (current, unchanged)
+- PRs with large diffs or file/glob sources → per-file concurrent mode
 
 **What changes:**
 | File | Change |
 |---|---|
-| `src/engine.rs` | `review()` becomes concurrent for multi-file sources |
-| `src/config.rs` | `review.max_concurrent_files` setting |
-| `src/tokens.rs` | Budget accounting per-file (not per-batch) |
+| `src/engine.rs` | Split into `review_batch()` and `review_per_file()`; dispatch with semaphore |
+| `src/config.rs` | `review.max_concurrent_files` (default 4) |
+| `src/tokens.rs` | Per-file budget accounting |
+| `src/error.rs` | Error aggregation (partial failure semantics) |
+
+### Testing
+- Integration: wiremock with multiple files, verify concurrent execution
+- Unit: error aggregation, semaphore behavior
 
 ---
 
 ## Phase 7 — Session persistence & resume
 
 **Goal:** Allow interrupted reviews to resume without re-analyzing
-completed files (adapted from OCR).
+completed files. Adapted from OCR.
 
 ### Design
 
-- Session files stored in `.reviewer/sessions/<session-id>.jsonl`
-- Each file's fingerprint (SHA-256 of mode + path + diff) tracked
-- Replayed files restored from cache on resume
-- `--resume <session-id>` flag on CLI and MCP
+```
+.reviewer/sessions/<session-id>.jsonl
+
+Record types: session_start, review_item_done, review_item_failed,
+              review_item_reused, session_end
+```
+
+Each file gets a SHA-256 fingerprint of mode + path + diff. On resume,
+already-analyzed files are skipped and their prior comments replayed.
+
+`--resume <session-id>` flag on CLI and MCP.
 
 **What changes:**
 | File | Change |
 |---|---|
 | `src/session/mod.rs` | New module |
-| `src/session/history.rs` | Session types |
+| `src/session/history.rs` | Session types, fingerprint |
 | `src/session/persist.rs` | JSONL writer |
-| `src/engine.rs` | Record progress during review |
+| `src/engine.rs` | Record progress, check resume state |
 
 ---
 
@@ -481,29 +530,31 @@ Phase 0 ─── current (shipped)
    │
    ├── Phase 1 ─── Rule system (no dependencies)
    │
+   ├── Phase 1b ── Per-repo config (no dependencies)
+   │
    ├── Phase 2 ─── gix (no dependencies)
    │
-   ├── Phase 3 ─── LLM tool loop
-   │   └── depends on Phase 2 (for file_read, code_search)
+   ├── Phase 3 ─── LLM tool loop + accurate token counting
+   │   └── optional: Phase 2 for richer code tools
    │
    ├── Phase 4 ─── Post-hoc accuracy
-   │   └── depends on Phase 3 (uses tool loop results)
+   │   └── no dependency on Phase 3 (works with single-shot)
    │
    ├── Phase 5 ─── Sticky summaries
-   │   └── no dependency on Phases 2-4 (can ship independently)
+   │   └── no dependencies
    │
    ├── Phase 6 ─── Concurrency
-   │   └── no dependency (can ship independently)
+   │   └── no dependencies
    │
    ├── Phase 7 ─── Session persistence
-   │   └── depends on Phase 6 (records per-file results)
+   │   └── depends on Phase 6 (records per-file state)
    │
    └── Phase 8 ─── New domains
-       └── no dependency (only needs prompt files)
+       └── no dependencies
 ```
 
-Phases 1, 2, 5, 6 can be done in parallel. Phase 3 is the most impactful
-and most complex — it's the only phase that changes the core engine loop.
+Phases 1, 1b, 2, 4, 5, 6 are fully parallelizable. Phase 3 is the only
+phase with a soft dependency (gix for richer tools) and the most complex.
 
 ---
 
@@ -512,15 +563,19 @@ and most complex — it's the only phase that changes the core engine loop.
 | Phase | Effort | Impact | Risk | Dependencies |
 |---|---|---|---|---|
 | 1 — Rules | Low | High | Low | None |
+| 1b — Per-repo config | Very low | Medium | Low | None |
 | 2 — gix | Medium | Medium | Low | None |
-| 3 — Tool loop | High | Very high | Medium | Phase 2 |
-| 4 — Post-hoc | Medium | Medium | Low | Phase 3 |
+| 3 — Tool loop | High | Very high | Medium | Optional: Phase 2 |
+| 4 — Post-hoc | Medium | Medium | Low | None |
 | 5 — Sticky | Low | Low | Low | None |
-| 6 — Concurrency | Medium | Medium | Low | None |
+| 6 — Concurrency | Medium | High | Medium | None |
 | 7 — Session | Medium | Low | Low | Phase 6 |
 | 8 — New domains | Low | High (demo) | None | None |
 
-**Recommended order:** 1 → 2 → 5 → 6 (parallel, low-risk) → 3 → 4 → 7 → 8
+**Recommended order:**
+Ground layer (parallel): 1, 1b, 2, 5, 6
+Value layer: 3, 4
+Polish: 7, 8
 
 ---
 
@@ -528,9 +583,25 @@ and most complex — it's the only phase that changes the core engine loop.
 
 | OCR pattern | Why not |
 |---|---|
-| 4-layer rule priority (--flag > project > global > system) | Overengineered for v1. Single `rules/` directory with index is sufficient. Users who need per-project overrides can use `reviewer.toml`'s `extra_instructions` field or create a custom domain. |
-| Async CommentWorkerPool | Adds thread-safety complexity without clear benefit for our sync-first model. Our `submit_finding` tool is synchronous — the AI waits for the result. |
-| XML message format for compression | JSON is simpler and avoids security concerns (XXE in downstream consumers). |
-| DiffMap snapshot for file_read_diff | Our tool loop can re-read from gix or filesystem — no need for a separate snapshot mechanism. |
-| Per-file fingerprint SHA-256 for resume | Useful but low urgency. Session persistence is Phase 7. |
-| ANSI terminal output with inline diff | Low priority. Our JSON output is machine-readable; SARIF is CI-friendly. Terminal output can be improved later. |
+| 4-layer rule priority (--flag > project > global > system) | Project-level `.reviewer/rules.json` is simpler and sufficient. |
+| Async CommentWorkerPool | Our `submit_finding` tool is synchronous — the AI waits for the result. Thread-safety cost outweighs benefit. |
+| XML message format for compression | JSON avoids XXE concerns and is consistent with the rest of the stack. |
+| DiffMap snapshot for file_read_diff | Our tool loop can re-read from gix or filesystem. No snapshot needed. |
+| ANSI terminal output with inline diff | Low priority. JSON + SARIF cover our users' needs. Terminal can be improved later. |
+| Per-file timeout in goroutines | Phase 6 concurrency will use `tokio::time::timeout` per file, adopted from OCR. |
+
+---
+
+## Appendix: Testing strategy per phase
+
+| Phase | Approach |
+|---|---|
+| 1 — Rules | Unit tests for rule resolution, pattern matching, stacking. Integration tests verify prompt contains injected rule text. |
+| 1b — Config | Unit tests for config merge, key validation, env overlay. |
+| 2 — gix | Unit tests against known git fixtures. No network. |
+| 3 — Tool loop | Wiremock serves tool-call responses. Verify loop executes tools, compresses memory, produces findings. Separate unit tests for TokenHandler, ToolRegistry, each tool. |
+| 4 — Post-hoc | Unit tests for line matching algorithms. Wiremock tests for filter and re-location AI calls. |
+| 5 — Sticky | Wiremock tests for comment search/edit/create with markers. |
+| 6 — Concurrency | Wiremock with multi-file PR. Verify concurrent execution, result merging, partial failure. |
+| 7 — Session | Tempfile for session files. Verify write, resume, replay. |
+| 8 — Domains | Integration tests with each new domain's prompt files. Verify pipeline runs end-to-end. |
