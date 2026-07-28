@@ -418,7 +418,7 @@ impl ReviewEngine {
         let pb = PromptBuilder::new(&resolved.domain);
 
         // ── 2a. Session tracking ─────────────────────────────────
-        let session = Session::new(
+        let mut session = Session::new(
             self.ai.model_name(),
             &resolved.domain,
             resolved.pr_number.map(|n| format!("#{}", n)).as_deref(),
@@ -703,6 +703,11 @@ impl ReviewEngine {
             latency_ms,
             "Review complete"
         );
+
+        // Finalize session
+        if let Some(s) = session.take() {
+            s.finalize(files_changed);
+        }
 
         let total_tokens_used = output_tokens_reported
             .map(|t| system_tokens_estimated + input_tokens_estimated + t as usize);
