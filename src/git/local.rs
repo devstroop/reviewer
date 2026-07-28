@@ -101,7 +101,6 @@ impl LocalRepo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
     fn find_repo_root() -> String {
         // Walk up from CWD to find the .git directory
