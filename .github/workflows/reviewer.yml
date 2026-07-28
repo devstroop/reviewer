@@ -9,7 +9,7 @@
 #     with:
 #       github_token: ${{ secrets.GITHUB_TOKEN }}
 #       ai_api_key: ${{ secrets.AI_API_KEY }}
-name: Review Agent
+name: Review
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
