@@ -307,6 +307,7 @@ async fn main() -> anyhow::Result<()> {
                     post_to_github: false,
                     paths: Vec::new(),
                     extra_instructions: extra_instructions.clone(),
+                    sticky: false,
                 },
             };
 
@@ -343,6 +344,7 @@ async fn main() -> anyhow::Result<()> {
                     post_to_github: false,
                     paths: Vec::new(),
                     extra_instructions: extra_instructions.clone(),
+                    sticky: false,
                 },
             };
 
@@ -375,6 +377,7 @@ async fn main() -> anyhow::Result<()> {
                     post_to_github: false,
                     paths: Vec::new(),
                     extra_instructions: extra_instructions.clone(),
+                    sticky: false,
                 },
             };
 
@@ -408,6 +411,7 @@ async fn main() -> anyhow::Result<()> {
                     post_to_github: false,
                     paths: Vec::new(),
                     extra_instructions: extra_instructions.clone(),
+                    sticky: false,
                 },
             };
 

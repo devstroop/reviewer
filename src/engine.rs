@@ -96,6 +96,8 @@ pub struct ReviewOptions {
     pub paths: Vec<String>,
     /// Extra instructions injected into the user prompt.
     pub extra_instructions: String,
+    /// If true, update the previous review comment in place instead of posting a new one.
+    pub sticky: bool,
 }
 
 impl Default for ReviewOptions {
@@ -104,6 +106,7 @@ impl Default for ReviewOptions {
             post_to_github: true,
             paths: Vec::new(),
             extra_instructions: String::new(),
+            sticky: false,
         }
     }
 }
@@ -537,9 +540,15 @@ impl ReviewEngine {
             if let (Some(owner), Some(repo)) = (resolved.owner.as_ref(), resolved.repo.as_ref()) {
                 if let Some(number) = resolved.pr_number {
                     if let Some(ref github) = self.github_svc {
-                        github
-                            .post_review(owner, repo, number, &review_text)
-                            .await?;
+                        if request.options.sticky {
+                            github
+                                .post_or_update_review(owner, repo, number, &review_text)
+                                .await?;
+                        } else {
+                            github
+                                .post_review(owner, repo, number, &review_text)
+                                .await?;
+                        }
                     } else {
                         tracing::error!(
                             "post_to_github is true but GITHUB_TOKEN is not configured — \

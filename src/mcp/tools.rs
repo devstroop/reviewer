@@ -16,6 +16,9 @@ pub(crate) struct ReviewPrArgs {
     pub paths: Vec<String>,
     #[serde(default)]
     pub extra_instructions: String,
+    /// If true, update the previous review comment in place.
+    #[serde(default)]
+    pub sticky: bool,
 }
 
 fn default_post() -> bool {
@@ -184,6 +187,7 @@ pub(crate) async fn handle_review_pr(
             post_to_github: args.post,
             paths: args.paths,
             extra_instructions: args.extra_instructions,
+            sticky: args.sticky,
         },
     };
 
@@ -215,6 +219,7 @@ pub(crate) async fn handle_review_diff(
             post_to_github: false,
             paths: Vec::new(),
             extra_instructions: args.extra_instructions,
+            sticky: false,
         },
     };
 
@@ -249,6 +254,7 @@ pub(crate) async fn handle_review_file(
             post_to_github: false,
             paths: Vec::new(),
             extra_instructions: args.extra_instructions,
+            sticky: false,
         },
     };
 
@@ -277,6 +283,7 @@ pub(crate) async fn handle_review_glob(
             post_to_github: false,
             paths: Vec::new(),
             extra_instructions: args.extra_instructions,
+            sticky: false,
         },
     };
 
@@ -312,6 +319,7 @@ pub(crate) async fn handle_review_files(
             post_to_github: args.post,
             paths: args.paths,
             extra_instructions: args.extra_instructions,
+            sticky: false,
         },
     };
 
