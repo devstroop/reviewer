@@ -72,6 +72,21 @@ enum Command {
         #[arg(long, default_value = "")]
         extra_instructions: String,
     },
+    /// Review a diff between two refs in a local git repository
+    ReviewLocal {
+        /// Path to the local git repository
+        #[arg(long)]
+        repo_path: String,
+        /// Base ref (e.g. "main", "origin/main", "HEAD~1")
+        #[arg(long)]
+        base_ref: String,
+        /// Head ref (e.g. "HEAD", "feature-branch")
+        #[arg(long)]
+        head_ref: String,
+        /// Extra context injected into the review prompt
+        #[arg(long, default_value = "")]
+        extra_instructions: String,
+    },
     /// Review all files matching a glob pattern
     ReviewGlob {
         /// Glob pattern (e.g. "src/**/*.rs")
@@ -371,6 +386,33 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             }
+        }
+        Command::ReviewLocal {
+            repo_path,
+            base_ref,
+            head_ref,
+            extra_instructions,
+        } => {
+            tracing::info!(repo_path, base_ref, head_ref, "ReviewLocal command");
+            let settings = reviewer::Settings::load()?;
+            let engine = reviewer::engine::ReviewEngine::new(&settings)?;
+
+            use reviewer::engine::{ReviewOptions, ReviewRequest};
+            let request = ReviewRequest {
+                source: ReviewSource::LocalBranch {
+                    repo_path: repo_path.clone(),
+                    base_ref: base_ref.clone(),
+                    head_ref: head_ref.clone(),
+                },
+                options: ReviewOptions {
+                    post_to_github: false,
+                    paths: Vec::new(),
+                    extra_instructions: extra_instructions.clone(),
+                },
+            };
+
+            let result = engine.review(request).await?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
         }
     }
 

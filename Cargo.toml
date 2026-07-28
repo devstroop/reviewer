@@ -51,6 +51,9 @@ strip-ansi-escapes = "0.2"
 # File globbing
 glob = "0.3"
 
+# Local git operations
+git2 = "0.21"
+
 [dev-dependencies]
 wiremock = "0.6"
 tempfile = "3"

@@ -3,6 +3,7 @@ pub mod config;
 pub mod diff;
 pub mod engine;
 pub mod error;
+pub mod git;
 pub mod github;
 pub mod language;
 pub mod logging;

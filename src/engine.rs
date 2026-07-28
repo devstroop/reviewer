@@ -79,6 +79,12 @@ pub enum ReviewSource {
     },
     /// Review all files matching a glob pattern.
     Glob { pattern: String, domain: String },
+    /// Compute diff locally from a git repository (no GitHub API needed for reading).
+    LocalBranch {
+        repo_path: String,
+        base_ref: String,
+        head_ref: String,
+    },
 }
 
 /// Behaviour flags for a single review invocation.
@@ -362,6 +368,29 @@ impl ReviewEngine {
                     branch: None,
                     base: None,
                     domain,
+                    language_hint: None,
+                }
+            }
+            ReviewSource::LocalBranch {
+                repo_path,
+                base_ref,
+                head_ref,
+            } => {
+                let repo = crate::git::LocalRepo::open(&repo_path)?;
+                let diff = repo.diff_between(&base_ref, &head_ref)?;
+                let title = format!("{}..{} in {}", base_ref, head_ref, repo_path);
+                ResolvedSource {
+                    pr_number: None,
+                    pr_title: Some(title),
+                    description: None,
+                    raw_diff: diff,
+                    file_contents: None,
+                    owner: None,
+                    repo: None,
+                    author: None,
+                    branch: Some(head_ref),
+                    base: Some(base_ref),
+                    domain: "code".into(),
                     language_hint: None,
                 }
             }
