@@ -19,6 +19,9 @@ pub(crate) struct ReviewPrArgs {
     /// If true, update the previous review comment in place.
     #[serde(default)]
     pub sticky: bool,
+    /// If true, enable the LLM tool loop during review.
+    #[serde(default)]
+    pub use_tools: bool,
 }
 
 fn default_post() -> bool {
@@ -188,6 +191,7 @@ pub(crate) async fn handle_review_pr(
             paths: args.paths,
             extra_instructions: args.extra_instructions,
             sticky: args.sticky,
+            use_tools: args.use_tools,
         },
     };
 
@@ -220,6 +224,7 @@ pub(crate) async fn handle_review_diff(
             paths: Vec::new(),
             extra_instructions: args.extra_instructions,
             sticky: false,
+            use_tools: false,
         },
     };
 
@@ -255,6 +260,7 @@ pub(crate) async fn handle_review_file(
             paths: Vec::new(),
             extra_instructions: args.extra_instructions,
             sticky: false,
+            use_tools: false,
         },
     };
 
@@ -284,6 +290,7 @@ pub(crate) async fn handle_review_glob(
             paths: Vec::new(),
             extra_instructions: args.extra_instructions,
             sticky: false,
+            use_tools: false,
         },
     };
 
@@ -320,6 +327,7 @@ pub(crate) async fn handle_review_files(
             paths: args.paths,
             extra_instructions: args.extra_instructions,
             sticky: false,
+            use_tools: false,
         },
     };
 

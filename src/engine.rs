@@ -99,6 +99,8 @@ pub struct ReviewOptions {
     pub extra_instructions: String,
     /// If true, update the previous review comment in place instead of posting a new one.
     pub sticky: bool,
+    /// If true, enable the LLM tool loop (file_read, code_search, etc.) during review.
+    pub use_tools: bool,
 }
 
 impl Default for ReviewOptions {
@@ -108,6 +110,7 @@ impl Default for ReviewOptions {
             paths: Vec::new(),
             extra_instructions: String::new(),
             sticky: false,
+            use_tools: false,
         }
     }
 }
@@ -237,6 +240,7 @@ impl ReviewEngine {
         let start = Instant::now();
         let post_to_github = request.options.post_to_github;
         let path_filter = request.options.paths;
+        let use_tools = request.options.use_tools;
 
         // Merge settings-level extra_instructions with request-level ones.
         let extra = if self.config_extra.is_empty() {
@@ -487,6 +491,37 @@ impl ReviewEngine {
             |co: &crate::ai::ChatOutput| co.finish_reason.as_deref() == Some("length");
         let reported_tokens =
             |co: &crate::ai::ChatOutput| co.usage.as_ref().and_then(|u| u.completion_tokens);
+
+        // If tools are enabled, use the interactive tool loop instead.
+        if use_tools {
+            let (tool_content, tool_findings, tool_out_tokens, _) = self
+                .run_tool_loop(&system, &user, &diff_parsed, &resolved)
+                .await?;
+            let elapsed = start.elapsed().as_millis() as u64;
+            let total_tokens = tool_out_tokens
+                .map(|t| system_tokens_estimated + input_tokens_estimated + t as usize);
+            return Ok(ReviewResult {
+                review_text: tool_content,
+                findings: tool_findings,
+                pr_number: resolved.pr_number,
+                pr_title: resolved.pr_title.clone(),
+                stats: ReviewStats {
+                    files_changed,
+                    files_reviewed,
+                    files_skipped,
+                    files_path_filtered,
+                    files_budget_dropped,
+                    input_tokens_estimated,
+                    system_tokens_estimated,
+                    output_tokens_reported: tool_out_tokens,
+                    total_tokens_used: total_tokens,
+                    latency_ms: elapsed,
+                    model: self.ai.model_name().to_string(),
+                    prompt_version: format!("{}/1", resolved.domain),
+                    domain: resolved.domain.clone(),
+                },
+            });
+        }
 
         let mut chat_output = self.ai.chat(&system, &user).await?;
         let mut output_tokens_reported = reported_tokens(&chat_output);
@@ -766,6 +801,160 @@ impl ReviewEngine {
                 domain: resolved.domain.clone(),
             },
         })
+    }
+
+    /// Run the interactive LLM tool loop.
+    ///
+    /// Sends the system + user prompt with tool definitions, executes tool
+    /// calls, and loops until the AI returns a text response or max rounds reached.
+    async fn run_tool_loop(
+        &self,
+        system: &str,
+        user: &str,
+        _diff_files: &[crate::diff::DiffFile],
+        _resolved: &ResolvedSource,
+    ) -> Result<(String, Vec<ReviewFinding>, Option<u32>, Option<u32>)> {
+        let tools = crate::tools::ToolRegistry::code_domain();
+        let tool_defs = tools.tool_defs();
+
+        let mut messages = vec![
+            crate::ai::Message {
+                role: "system".to_string(),
+                content: Some(system.to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            crate::ai::Message {
+                role: "user".to_string(),
+                content: Some(user.to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+            },
+        ];
+
+        let max_rounds: usize = 10;
+        let mut all_findings: Vec<ReviewFinding> = Vec::new();
+        let mut total_output_tokens: Option<u32> = None;
+
+        for round in 0..max_rounds {
+            let output = self
+                .ai
+                .chat_with_tools(messages.clone(), tool_defs.clone())
+                .await?;
+            total_output_tokens = output.usage.as_ref().and_then(|u| u.completion_tokens);
+
+            match output.finish_reason.as_deref() {
+                Some("tool_calls") => {
+                    // Execute tool calls and append results
+                    struct ToolResult {
+                        tool_call_id: String,
+                        result: String,
+                    }
+                    let mut tool_results = Vec::new();
+                    for tc in &output.tool_calls {
+                        let args: serde_json::Value = serde_json::from_str(&tc.function.arguments)
+                            .unwrap_or(serde_json::json!({}));
+                        let result = tools
+                            .execute(&tc.function.name, args.clone())
+                            .await
+                            .unwrap_or_else(|e| format!("Error: {}", e));
+
+                        // Check for submitted findings
+                        if tc.function.name == "submit_finding" {
+                            all_findings.push(ReviewFinding {
+                                severity: args
+                                    .get("severity")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("info")
+                                    .to_string(),
+                                category: args
+                                    .get("category")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("other")
+                                    .to_string(),
+                                message: args
+                                    .get("message")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
+                                file: args
+                                    .get("file")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string()),
+                                line: args.get("line").and_then(|v| v.as_u64()),
+                                suggestion: args
+                                    .get("suggestion")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string()),
+                            });
+                        }
+
+                        // If task_done, break out immediately
+                        if tc.function.name == "task_done" {
+                            // Collect any remaining findings
+                            return Ok((
+                                output.content,
+                                all_findings,
+                                total_output_tokens,
+                                total_output_tokens,
+                            ));
+                        }
+
+                        tool_results.push(ToolResult {
+                            tool_call_id: tc.id.clone(),
+                            result,
+                        });
+                    }
+
+                    // Append assistant message with tool_calls
+                    messages.push(crate::ai::Message {
+                        role: "assistant".to_string(),
+                        content: Some(output.content),
+                        tool_calls: Some(output.tool_calls),
+                        tool_call_id: None,
+                    });
+
+                    // Append tool result messages
+                    for tr in tool_results {
+                        messages.push(crate::ai::Message {
+                            role: "tool".to_string(),
+                            content: Some(tr.result),
+                            tool_calls: None,
+                            tool_call_id: Some(tr.tool_call_id),
+                        });
+                    }
+                }
+                Some("stop") | Some("length") | None => {
+                    // Text response — done
+                    return Ok((
+                        output.content,
+                        all_findings,
+                        total_output_tokens,
+                        total_output_tokens,
+                    ));
+                }
+                Some(reason) => {
+                    tracing::warn!(reason, "Unknown finish_reason in tool loop");
+                    return Ok((
+                        output.content,
+                        all_findings,
+                        total_output_tokens,
+                        total_output_tokens,
+                    ));
+                }
+            }
+
+            if round == max_rounds - 1 {
+                tracing::warn!("Tool loop reached max rounds ({})", max_rounds);
+            }
+        }
+
+        Ok((
+            String::new(),
+            all_findings,
+            total_output_tokens,
+            total_output_tokens,
+        ))
     }
 
     /// Build the user prompt from already-parsed diff files, applying filters and budget.

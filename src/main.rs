@@ -308,6 +308,7 @@ async fn main() -> anyhow::Result<()> {
                     paths: Vec::new(),
                     extra_instructions: extra_instructions.clone(),
                     sticky: false,
+                    use_tools: false,
                 },
             };
 
@@ -345,6 +346,7 @@ async fn main() -> anyhow::Result<()> {
                     paths: Vec::new(),
                     extra_instructions: extra_instructions.clone(),
                     sticky: false,
+                    use_tools: false,
                 },
             };
 
@@ -378,6 +380,7 @@ async fn main() -> anyhow::Result<()> {
                     paths: Vec::new(),
                     extra_instructions: extra_instructions.clone(),
                     sticky: false,
+                    use_tools: false,
                 },
             };
 
@@ -412,6 +415,7 @@ async fn main() -> anyhow::Result<()> {
                     paths: Vec::new(),
                     extra_instructions: extra_instructions.clone(),
                     sticky: false,
+                    use_tools: false,
                 },
             };
 
