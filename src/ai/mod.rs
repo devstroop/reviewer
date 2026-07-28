@@ -176,15 +176,13 @@ impl AiClient {
                             .and_then(|c| c.finish_reason.clone());
                         let content = chat_resp
                             .choices
-                            .iter()
-                            .next()
+                            .first()
                             .and_then(|c| c.message.content.clone())
                             .unwrap_or_default();
                         let tool_calls = chat_resp
                             .choices
-                            .into_iter()
-                            .next()
-                            .and_then(|c| c.message.tool_calls)
+                            .first()
+                            .and_then(|c| c.message.tool_calls.clone())
                             .unwrap_or_default();
                         Ok(ChatOutput {
                             content,
