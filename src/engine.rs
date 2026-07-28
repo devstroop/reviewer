@@ -15,18 +15,19 @@ use crate::services::{
 };
 use crate::tokens::estimate_tokens;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 use tokio::io::AsyncReadExt;
+use tokio::sync::Semaphore;
 use tracing::info;
 
 /// Baseline token overhead for prompt template text that is not part of the
 /// diff context: headers, metadata fields, markdown formatting, diff fence
 /// wrapping, and the file-list header.
-const PROMPT_OVERHEAD_BASELINE: usize = 100;
-
 /// Estimated tokens per file in the file-list section (the bullet point with
 /// filename, status, and line counts).  Each entry is roughly 50-70 bytes.
+const PROMPT_OVERHEAD_BASELINE: usize = 100;
 const PROMPT_OVERHEAD_PER_FILE: usize = 20;
 
 // ── Resolved source (private) ──────────────────────────────────
@@ -206,6 +207,8 @@ pub struct ReviewEngine {
     ai: AiClient,
     /// Extra instructions from settings (merged into every user prompt).
     config_extra: String,
+    /// Semaphore for throttling concurrent file reviews.
+    concurrency_sem: Arc<Semaphore>,
 }
 
 impl ReviewEngine {
@@ -221,6 +224,7 @@ impl ReviewEngine {
             diff_svc: DiffService::new(settings),
             ai: AiClient::new(settings)?,
             config_extra: settings.review.extra_instructions.clone(),
+            concurrency_sem: Arc::new(Semaphore::new(4)),
         })
     }
 
@@ -401,6 +405,22 @@ impl ReviewEngine {
 
         // ── 2. Content resolution + prompt building ────────────
         let pb = PromptBuilder::new(&resolved.domain);
+
+        // For multi-file sources with available concurrency, use the concurrent path.
+        if let Some(file_contents) = resolved.file_contents.as_ref() {
+            if file_contents.len() > 1 && self.concurrency_sem.available_permits() > 0 {
+                return self
+                    .review_concurrent(
+                        file_contents,
+                        &resolved,
+                        &extra,
+                        &path_filter,
+                        post_to_github,
+                        start,
+                    )
+                    .await;
+            }
+        }
 
         // Parse diff first so we can resolve rules from the actual file list.
         // This avoids double-parsing (once for rules, once for prompt building).
@@ -597,6 +617,120 @@ impl ReviewEngine {
                 system_tokens_estimated,
                 output_tokens_reported,
                 total_tokens_used,
+                latency_ms,
+                model: self.ai.model_name().to_string(),
+                prompt_version: format!("{}/1", resolved.domain),
+                domain: resolved.domain.clone(),
+            },
+        })
+    }
+
+    /// Review multiple files concurrently, each as an independent AI call.
+    /// Results are merged into a single ReviewResult.
+    async fn review_concurrent(
+        &self,
+        file_contents: &[FileContent],
+        resolved: &ResolvedSource,
+        extra: &str,
+        path_filter: &[String],
+        _post_to_github: bool,
+        start: Instant,
+    ) -> Result<ReviewResult> {
+        // Phase 1: build all prompts (owned strings).
+        let pb = PromptBuilder::new(&resolved.domain);
+        let system = pb.system_prompt("");
+        let system_tokens = pb.system_prompt_tokens("");
+
+        struct Prompt {
+            system: String,
+            user: String,
+        }
+        let mut prompts: Vec<Prompt> = Vec::with_capacity(file_contents.len());
+        let mut all_input_tokens = 0usize;
+
+        for fc in file_contents {
+            let single = std::slice::from_ref(fc);
+            let ctx = PromptContext {
+                title: resolved.pr_title.as_deref().unwrap_or("(untitled)"),
+                description: resolved.description.as_deref().unwrap_or(""),
+                owner: "",
+                repo: "",
+                author: "",
+                branch: "",
+                base: "",
+                language_hint: None,
+            };
+            let (_, _, _, _, _, user, ite) = Self::build_file_prompt(
+                single,
+                &pb,
+                &ctx,
+                extra,
+                path_filter,
+                16000,
+                system_tokens,
+            );
+            all_input_tokens += ite;
+            prompts.push(Prompt {
+                system: system.clone(),
+                user,
+            });
+        }
+
+        // Phase 2: fire AI calls via tokio::spawn for true concurrency.
+        let ai = self.ai.clone();
+        let mut handles = Vec::with_capacity(prompts.len());
+
+        for p in prompts {
+            let _permit = self.concurrency_sem.acquire().await;
+            let ai = ai.clone();
+            handles.push(tokio::spawn(
+                async move { ai.chat(&p.system, &p.user).await },
+            ));
+        }
+
+        // Phase 3: collect and merge results.
+        let mut all_review_text = String::new();
+        let mut all_findings = Vec::new();
+        let mut total_output_tokens: Option<u32> = None;
+        let mut succeeded = 0usize;
+
+        for handle in handles {
+            match handle.await {
+                Ok(Ok(chat_output)) => {
+                    let sanitized = crate::services::sanitize_output(&chat_output.content);
+                    let extracted = JsonExtractor::extract(&sanitized);
+                    if !all_review_text.is_empty() {
+                        all_review_text.push_str("\n\n---\n\n");
+                    }
+                    all_review_text.push_str(&extracted.review_text);
+                    all_findings.extend(extracted.findings);
+                    total_output_tokens =
+                        chat_output.usage.as_ref().and_then(|u| u.completion_tokens);
+                    succeeded += 1;
+                }
+                Ok(Err(e)) => tracing::warn!(error = %e, "Concurrent AI call failed"),
+                Err(e) => tracing::warn!(error = %e, "Concurrent task panicked"),
+            }
+        }
+
+        let latency_ms = start.elapsed().as_millis() as u64;
+
+        Ok(ReviewResult {
+            review_text: all_review_text,
+            findings: all_findings,
+            pr_number: resolved.pr_number,
+            pr_title: resolved.pr_title.clone(),
+            stats: ReviewStats {
+                files_changed: file_contents.len(),
+                files_reviewed: succeeded,
+                files_skipped: file_contents.len().saturating_sub(succeeded),
+                files_path_filtered: 0,
+                files_budget_dropped: 0,
+                input_tokens_estimated: all_input_tokens,
+                system_tokens_estimated: system_tokens,
+                output_tokens_reported: total_output_tokens,
+                total_tokens_used: total_output_tokens
+                    .map(|t| system_tokens + all_input_tokens + t as usize),
                 latency_ms,
                 model: self.ai.model_name().to_string(),
                 prompt_version: format!("{}/1", resolved.domain),

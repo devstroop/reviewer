@@ -1341,6 +1341,7 @@ dependencies = [
  "backoff",
  "clap",
  "diffy",
+ "futures",
  "git2",
  "glob",
  "governor",
