@@ -1,6 +1,6 @@
 # reviewer
 
-AI-powered PR review agent — a single-binary Rust CLI that reviews GitHub Pull Requests using any OpenAI-compatible AI endpoint. Deployable as a Docker-based GitHub Action.
+AI-powered review agent — a single-binary Rust CLI that reviews GitHub Pull Requests using any OpenAI-compatible AI endpoint. Deployable as a Docker-based GitHub Action.
 
 **License:** MIT | **MSRV:** 1.85 | **Base image:** `gcr.io/distroless/static` (~20 MB)
 
