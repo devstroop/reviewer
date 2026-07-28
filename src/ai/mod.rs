@@ -60,7 +60,7 @@ impl AiClient {
 
     /// Send a chat completion request with the configured max_tokens.
     pub async fn chat(&self, system: &str, user: &str) -> Result<ChatOutput> {
-        self.chat_inner(system, user, self.max_completion_tokens)
+        self.chat_inner(system, user, self.max_completion_tokens, None)
             .await
     }
 
@@ -71,33 +71,74 @@ impl AiClient {
         user: &str,
         max_tokens: u32,
     ) -> Result<ChatOutput> {
-        self.chat_inner(system, user, max_tokens).await
+        self.chat_inner(system, user, max_tokens, None).await
     }
 
-    /// Shared implementation for all chat variants.
-    async fn chat_inner(&self, system: &str, user: &str, max_tokens: u32) -> Result<ChatOutput> {
+    /// Send a chat completion request with tool definitions.
+    ///
+    /// The caller provides the full message history (including system prompt,
+    /// user input, previous assistant responses, and tool results).
+    /// Tools are sent as function definitions for the AI to call.
+    pub async fn chat_with_tools(
+        &self,
+        messages: Vec<Message>,
+        tools: Vec<ToolDef>,
+    ) -> Result<ChatOutput> {
         let url = format!("{}/chat/completions", self.api_base.trim_end_matches('/'));
 
         let request = ChatRequest {
             model: self.model.clone(),
-            messages: vec![
-                Message {
-                    role: "system".to_string(),
-                    content: system.to_string(),
-                },
-                Message {
-                    role: "user".to_string(),
-                    content: user.to_string(),
-                },
-            ],
+            messages,
             temperature: Some(self.temperature),
-            max_tokens: Some(max_tokens),
+            max_tokens: Some(self.max_completion_tokens),
+            tools: Some(tools),
         };
 
+        self.send_request(&url, request).await
+    }
+
+    /// Shared implementation for all chat variants.
+    async fn chat_inner(
+        &self,
+        system: &str,
+        user: &str,
+        max_tokens: u32,
+        tools: Option<Vec<ToolDef>>,
+    ) -> Result<ChatOutput> {
+        let url = format!("{}/chat/completions", self.api_base.trim_end_matches('/'));
+
+        let messages = vec![
+            Message {
+                role: "system".to_string(),
+                content: Some(system.to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            Message {
+                role: "user".to_string(),
+                content: Some(user.to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+            },
+        ];
+
+        let request = ChatRequest {
+            model: self.model.clone(),
+            messages,
+            temperature: Some(self.temperature),
+            max_tokens: Some(max_tokens),
+            tools,
+        };
+
+        self.send_request(&url, request).await
+    }
+
+    /// Send a chat request and parse the response, handling both text and tool calls.
+    async fn send_request(&self, url: &str, request: ChatRequest) -> Result<ChatOutput> {
         let response = self
             .retry(|| {
                 let client = self.client.clone();
-                let url = url.clone();
+                let url = url.to_string();
                 let request = request.clone();
                 let api_key = self.api_key.clone();
                 async move {
@@ -135,14 +176,21 @@ impl AiClient {
                             .and_then(|c| c.finish_reason.clone());
                         let content = chat_resp
                             .choices
+                            .iter()
+                            .next()
+                            .and_then(|c| c.message.content.clone())
+                            .unwrap_or_default();
+                        let tool_calls = chat_resp
+                            .choices
                             .into_iter()
                             .next()
-                            .and_then(|c| c.message.content)
+                            .and_then(|c| c.message.tool_calls)
                             .unwrap_or_default();
                         Ok(ChatOutput {
                             content,
                             usage: chat_resp.usage,
                             finish_reason,
+                            tool_calls,
                         })
                     } else {
                         let text = resp.text().await.unwrap_or_default();
@@ -266,15 +314,20 @@ mod tests {
             messages: vec![
                 Message {
                     role: "system".to_string(),
-                    content: "You are a reviewer".to_string(),
+                    content: Some("You are a reviewer".to_string()),
+                    tool_calls: None,
+                    tool_call_id: None,
                 },
                 Message {
                     role: "user".to_string(),
-                    content: "Review this diff".to_string(),
+                    content: Some("Review this diff".to_string()),
+                    tool_calls: None,
+                    tool_call_id: None,
                 },
             ],
             temperature: Some(0.2),
             max_tokens: Some(4096),
+            tools: None,
         };
 
         let json = serde_json::to_value(&request).unwrap();
