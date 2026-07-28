@@ -11,3 +11,6 @@
 # Development files
 REVIEW.md
 ISSUES.md
+
+# Session files
+.reviewer/sessions/
