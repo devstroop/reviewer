@@ -555,6 +555,35 @@ impl ReviewEngine {
             );
         }
 
+        // ── 7c. Post-hoc review filter ──────────────────────────
+        // Ask the AI to identify and remove false positives.
+        if !findings.is_empty() && !resolved.raw_diff.is_empty() {
+            if let Ok(filtered) = crate::services::review_filter::review_filter(
+                &self.ai,
+                &findings,
+                &resolved.raw_diff,
+            )
+            .await
+            {
+                if filtered.len() < findings.len() {
+                    let removed = findings.len() - filtered.len();
+                    tracing::info!(removed, "Review filter removed false positives");
+                    findings = filtered;
+                }
+            }
+        }
+
+        // ── 7d. Line number re-location ─────────────────────────
+        // Attempt to resolve line numbers for findings that lack them.
+        if !findings.is_empty() && !diff_parsed.is_empty() {
+            let _ = crate::services::relocation::resolve_line_numbers(
+                &self.ai,
+                &mut findings,
+                &diff_parsed,
+            )
+            .await;
+        }
+
         // ── 8. Post (optional, always Markdown) ─────────────────
         if post_to_github {
             if let (Some(owner), Some(repo)) = (resolved.owner.as_ref(), resolved.repo.as_ref()) {
