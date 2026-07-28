@@ -13,6 +13,7 @@ use crate::services::{
     DiffService, GithubService, JsonExtractor, PromptBuilder, PromptContext,
     json_extractor::MIN_TOKENS_FOR_RETRY,
 };
+use crate::session::{self, Session};
 use crate::tokens::estimate_tokens;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -101,6 +102,8 @@ pub struct ReviewOptions {
     pub sticky: bool,
     /// If true, enable the LLM tool loop (file_read, code_search, etc.) during review.
     pub use_tools: bool,
+    /// Session ID to resume from (skips already-reviewed files).
+    pub resume_session: Option<String>,
 }
 
 impl Default for ReviewOptions {
@@ -111,6 +114,7 @@ impl Default for ReviewOptions {
             extra_instructions: String::new(),
             sticky: false,
             use_tools: false,
+            resume_session: None,
         }
     }
 }
@@ -132,6 +136,9 @@ pub struct ReviewResult {
     pub pr_number: Option<u64>,
     pub pr_title: Option<String>,
     pub stats: ReviewStats,
+    /// Session ID for resume support.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 /// A single structured finding extracted from the AI review.
@@ -410,6 +417,22 @@ impl ReviewEngine {
         // ── 2. Content resolution + prompt building ────────────
         let pb = PromptBuilder::new(&resolved.domain);
 
+        // ── 2a. Session tracking ─────────────────────────────────
+        let session = Session::new(
+            self.ai.model_name(),
+            &resolved.domain,
+            resolved.pr_number.map(|n| format!("#{}", n)).as_deref(),
+        )
+        .ok();
+        let session_id = session.as_ref().map(|s| s.id().to_string());
+
+        // Check resume state if a session ID was provided.
+        let _resume_state = request
+            .options
+            .resume_session
+            .as_ref()
+            .and_then(|sid| session::load_resume_state(sid).ok());
+
         // For multi-file sources with available concurrency, use the concurrent path.
         if let Some(file_contents) = resolved.file_contents.as_ref() {
             if file_contents.len() > 1 && self.concurrency_sem.available_permits() > 0 {
@@ -421,6 +444,7 @@ impl ReviewEngine {
                         &path_filter,
                         post_to_github,
                         start,
+                        session_id.clone(),
                     )
                     .await;
             }
@@ -536,6 +560,7 @@ impl ReviewEngine {
                     prompt_version: format!("{}/1", resolved.domain),
                     domain: resolved.domain.clone(),
                 },
+                session_id: session_id.clone(),
             });
         }
 
@@ -702,11 +727,13 @@ impl ReviewEngine {
                 prompt_version: format!("{}/1", resolved.domain),
                 domain: resolved.domain.clone(),
             },
+            session_id: session_id.clone(),
         })
     }
 
     /// Review multiple files concurrently, each as an independent AI call.
     /// Results are merged into a single ReviewResult.
+    #[allow(clippy::too_many_arguments)]
     async fn review_concurrent(
         &self,
         file_contents: &[FileContent],
@@ -715,6 +742,7 @@ impl ReviewEngine {
         path_filter: &[String],
         _post_to_github: bool,
         start: Instant,
+        session_id: Option<String>,
     ) -> Result<ReviewResult> {
         // Phase 1: build all prompts (owned strings).
         let pb = PromptBuilder::new(&resolved.domain);
@@ -816,6 +844,7 @@ impl ReviewEngine {
                 prompt_version: format!("{}/1", resolved.domain),
                 domain: resolved.domain.clone(),
             },
+            session_id: session_id.clone(),
         })
     }
 

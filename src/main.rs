@@ -309,6 +309,7 @@ async fn main() -> anyhow::Result<()> {
                     extra_instructions: extra_instructions.clone(),
                     sticky: false,
                     use_tools: false,
+                    resume_session: None,
                 },
             };
 
@@ -347,6 +348,7 @@ async fn main() -> anyhow::Result<()> {
                     extra_instructions: extra_instructions.clone(),
                     sticky: false,
                     use_tools: false,
+                    resume_session: None,
                 },
             };
 
@@ -381,6 +383,7 @@ async fn main() -> anyhow::Result<()> {
                     extra_instructions: extra_instructions.clone(),
                     sticky: false,
                     use_tools: false,
+                    resume_session: None,
                 },
             };
 
@@ -416,6 +419,7 @@ async fn main() -> anyhow::Result<()> {
                     extra_instructions: extra_instructions.clone(),
                     sticky: false,
                     use_tools: false,
+                    resume_session: None,
                 },
             };
 

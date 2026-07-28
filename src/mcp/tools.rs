@@ -191,7 +191,8 @@ pub(crate) async fn handle_review_pr(
             paths: args.paths,
             extra_instructions: args.extra_instructions,
             sticky: args.sticky,
-            use_tools: args.use_tools,
+            use_tools: false,
+            resume_session: None,
         },
     };
 
@@ -225,6 +226,7 @@ pub(crate) async fn handle_review_diff(
             extra_instructions: args.extra_instructions,
             sticky: false,
             use_tools: false,
+            resume_session: None,
         },
     };
 
@@ -261,6 +263,7 @@ pub(crate) async fn handle_review_file(
             extra_instructions: args.extra_instructions,
             sticky: false,
             use_tools: false,
+            resume_session: None,
         },
     };
 
@@ -291,6 +294,7 @@ pub(crate) async fn handle_review_glob(
             extra_instructions: args.extra_instructions,
             sticky: false,
             use_tools: false,
+            resume_session: None,
         },
     };
 
@@ -328,6 +332,7 @@ pub(crate) async fn handle_review_files(
             extra_instructions: args.extra_instructions,
             sticky: false,
             use_tools: false,
+            resume_session: None,
         },
     };
 
