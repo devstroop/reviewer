@@ -16,7 +16,9 @@ toml = "0.8"
 shellexpand = "3"
 
 # Async runtime
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "io-std", "io-util"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "io-std", "io-util", "process", "fs"] }
+futures = "0.3"
+async-trait = "0.1"
 
 # HTTP
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
@@ -50,6 +52,15 @@ strip-ansi-escapes = "0.2"
 
 # File globbing
 glob = "0.3"
+
+# Local git operations
+git2 = "0.21"
+
+# Token counting (pure Rust, no C deps)
+tiktoken = "3"
+
+# Deterministic hashing for session fingerprints
+sha2 = "0.10"
 
 [dev-dependencies]
 wiremock = "0.6"

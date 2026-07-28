@@ -44,6 +44,10 @@ pub enum AgentError {
     #[error("Diff parse error: {0}")]
     Diff(String),
 
+    /// A local git operation error (git2/libgit2).
+    #[error("Git error: {0}")]
+    Git(String),
+
     /// The token budget was exceeded by the diff content.
     ///
     /// Applies when `used` tokens exceed the `limit` configured in

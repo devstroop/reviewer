@@ -200,6 +200,7 @@ mod tests {
             ],
             pr_number: Some(1),
             pr_title: Some("Test".into()),
+            session_id: None,
             stats: ReviewStats {
                 files_changed: 2,
                 files_reviewed: 1,

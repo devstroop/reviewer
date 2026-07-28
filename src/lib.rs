@@ -3,6 +3,7 @@ pub mod config;
 pub mod diff;
 pub mod engine;
 pub mod error;
+pub mod git;
 pub mod github;
 pub mod language;
 pub mod logging;
@@ -11,6 +12,7 @@ pub mod sarif;
 pub mod sensitive;
 pub mod server;
 pub(crate) mod services;
+pub mod session;
 pub mod tokens;
 pub mod tools;
 

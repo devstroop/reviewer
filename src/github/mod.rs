@@ -481,6 +481,47 @@ impl GitHub {
         self.post_json(&url, &review_body).await
     }
 
+    /// Find an issue comment on a PR that contains the given marker string.
+    /// Returns the first matching comment (most recent first).
+    pub async fn find_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+        marker: &str,
+    ) -> Result<Option<Comment>> {
+        let url = format!(
+            "{}/repos/{}/{}/issues/{}/comments",
+            self.api_base, owner, repo, number
+        );
+        let comments: Vec<Comment> = self.get_json(&url).await?;
+        Ok(comments.into_iter().find(|c| {
+            c.body
+                .as_deref()
+                .map(|b| b.contains(marker))
+                .unwrap_or(false)
+        }))
+    }
+
+    /// Update an existing issue comment.
+    pub async fn edit_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        comment_id: u64,
+        body: &str,
+    ) -> Result<Comment> {
+        let url = format!(
+            "{}/repos/{}/{}/issues/comments/{}",
+            self.api_base, owner, repo, comment_id
+        );
+        #[derive(serde::Serialize)]
+        struct EditBody<'a> {
+            body: &'a str,
+        }
+        self.patch_json(&url, &EditBody { body }).await
+    }
+
     // ──────────────────────────────────────
     // Internal HTTP helpers
     // ──────────────────────────────────────
@@ -591,6 +632,48 @@ impl GitHub {
                 let body = body_json.clone();
                 async move {
                     let resp = client.post(&url).json(&body).send().await?;
+                    let status = resp.status();
+                    if status.is_success() {
+                        let json = resp.json().await?;
+                        Ok(json)
+                    } else {
+                        let rate_remaining = resp
+                            .headers()
+                            .get("X-RateLimit-Remaining")
+                            .and_then(|v| v.to_str().ok())
+                            .map(|s| s.to_string());
+                        let text = resp.text().await.unwrap_or_default();
+                        Err(classify_error(status, &text, rate_remaining.as_deref()))
+                    }
+                }
+            })
+            .await?;
+
+        Ok(response)
+    }
+
+    /// Perform a PATCH request with a JSON body and deserialize the response.
+    async fn patch_json<T: serde::de::DeserializeOwned, B: serde::Serialize>(
+        &self,
+        url: &str,
+        body: &B,
+    ) -> Result<T> {
+        let _permit = self
+            .semaphore
+            .acquire()
+            .await
+            .map_err(|e| AgentError::GitHub(format!("Semaphore acquire failed: {}", e)))?;
+        self.rate_limiter.until_ready().await;
+
+        let url = url.to_string();
+        let body_json = serde_json::to_value(body)?;
+        let response = self
+            .retry(move || {
+                let client = self.client.clone();
+                let url = url.clone();
+                let body = body_json.clone();
+                async move {
+                    let resp = client.patch(&url).json(&body).send().await?;
                     let status = resp.status();
                     if status.is_success() {
                         let json = resp.json().await?;

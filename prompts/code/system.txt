@@ -4,6 +4,10 @@ Analyze the provided code and identify bugs, security vulnerabilities,
 performance issues, API misuse, and missing edge cases. Focus on the substance
 of the code, not formatting.
 
+{system_rule}
+
+{tool_loop_instructions}
+
 ## Output format
 
 Your response MUST start with a JSON code block containing structured findings, followed by the markdown review:

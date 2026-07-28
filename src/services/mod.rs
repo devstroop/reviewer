@@ -8,6 +8,8 @@ pub(crate) mod file_reader;
 pub(crate) mod github_service;
 pub(crate) mod json_extractor;
 pub(crate) mod prompt_builder;
+pub(crate) mod relocation;
+pub(crate) mod review_filter;
 pub(crate) mod sanitize;
 
 pub(crate) use diff_service::DiffService;

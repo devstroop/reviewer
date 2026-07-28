@@ -13,20 +13,22 @@ use crate::services::{
     DiffService, GithubService, JsonExtractor, PromptBuilder, PromptContext,
     json_extractor::MIN_TOKENS_FOR_RETRY,
 };
+use crate::session::Session;
 use crate::tokens::estimate_tokens;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 use tokio::io::AsyncReadExt;
+use tokio::sync::Semaphore;
 use tracing::info;
 
 /// Baseline token overhead for prompt template text that is not part of the
 /// diff context: headers, metadata fields, markdown formatting, diff fence
 /// wrapping, and the file-list header.
-const PROMPT_OVERHEAD_BASELINE: usize = 100;
-
 /// Estimated tokens per file in the file-list section (the bullet point with
 /// filename, status, and line counts).  Each entry is roughly 50-70 bytes.
+const PROMPT_OVERHEAD_BASELINE: usize = 100;
 const PROMPT_OVERHEAD_PER_FILE: usize = 20;
 
 // ── Resolved source (private) ──────────────────────────────────
@@ -79,6 +81,12 @@ pub enum ReviewSource {
     },
     /// Review all files matching a glob pattern.
     Glob { pattern: String, domain: String },
+    /// Compute diff locally from a git repository (no GitHub API needed for reading).
+    LocalBranch {
+        repo_path: String,
+        base_ref: String,
+        head_ref: String,
+    },
 }
 
 /// Behaviour flags for a single review invocation.
@@ -90,6 +98,12 @@ pub struct ReviewOptions {
     pub paths: Vec<String>,
     /// Extra instructions injected into the user prompt.
     pub extra_instructions: String,
+    /// If true, update the previous review comment in place instead of posting a new one.
+    pub sticky: bool,
+    /// If true, enable the LLM tool loop (file_read, code_search, etc.) during review.
+    pub use_tools: bool,
+    /// Session ID to resume from (skips already-reviewed files).
+    pub resume_session: Option<String>,
 }
 
 impl Default for ReviewOptions {
@@ -98,6 +112,9 @@ impl Default for ReviewOptions {
             post_to_github: true,
             paths: Vec::new(),
             extra_instructions: String::new(),
+            sticky: false,
+            use_tools: false,
+            resume_session: None,
         }
     }
 }
@@ -119,6 +136,9 @@ pub struct ReviewResult {
     pub pr_number: Option<u64>,
     pub pr_title: Option<String>,
     pub stats: ReviewStats,
+    /// Session ID for resume support.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 /// A single structured finding extracted from the AI review.
@@ -197,6 +217,8 @@ pub struct ReviewEngine {
     ai: AiClient,
     /// Extra instructions from settings (merged into every user prompt).
     config_extra: String,
+    /// Semaphore for throttling concurrent file reviews.
+    concurrency_sem: Arc<Semaphore>,
 }
 
 impl ReviewEngine {
@@ -212,6 +234,7 @@ impl ReviewEngine {
             diff_svc: DiffService::new(settings),
             ai: AiClient::new(settings)?,
             config_extra: settings.review.extra_instructions.clone(),
+            concurrency_sem: Arc::new(Semaphore::new(4)),
         })
     }
 
@@ -224,6 +247,7 @@ impl ReviewEngine {
         let start = Instant::now();
         let post_to_github = request.options.post_to_github;
         let path_filter = request.options.paths;
+        let use_tools = request.options.use_tools;
 
         // Merge settings-level extra_instructions with request-level ones.
         let extra = if self.config_extra.is_empty() {
@@ -365,12 +389,235 @@ impl ReviewEngine {
                     language_hint: None,
                 }
             }
+            ReviewSource::LocalBranch {
+                repo_path,
+                base_ref,
+                head_ref,
+            } => {
+                let repo = crate::git::LocalRepo::open(&repo_path)?;
+                let diff = repo.diff_between(&base_ref, &head_ref)?;
+                let title = format!("{}..{} in {}", base_ref, head_ref, repo_path);
+                ResolvedSource {
+                    pr_number: None,
+                    pr_title: Some(title),
+                    description: None,
+                    raw_diff: diff,
+                    file_contents: None,
+                    owner: None,
+                    repo: None,
+                    author: None,
+                    branch: Some(head_ref),
+                    base: Some(base_ref),
+                    domain: "code".into(),
+                    language_hint: None,
+                }
+            }
         };
 
         // ── 2. Content resolution + prompt building ────────────
         let pb = PromptBuilder::new(&resolved.domain);
-        let system = pb.system_prompt();
-        let system_tokens_estimated = pb.system_prompt_tokens();
+
+        // ── 2a. Session tracking ─────────────────────────────────
+        let mut session = Session::new(
+            self.ai.model_name(),
+            &resolved.domain,
+            resolved.pr_number.map(|n| format!("#{}", n)).as_deref(),
+        )
+        .ok();
+        let session_id = session.as_ref().map(|s| s.id().to_string());
+
+        // Parse diff first so we can resolve rules from the actual file list.
+        // This avoids double-parsing (once for rules, once for prompt building).
+        let (diff_files_changed, diff_parsed) =
+            if resolved.file_contents.is_some() || resolved.raw_diff.is_empty() {
+                (0, vec![])
+            } else {
+                self.diff_svc
+                .parse_and_filter(&resolved.raw_diff)
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "Diff parsing failed — no rules will be resolved");
+                    (0, vec![])
+                })
+            };
+
+        let rules = pb.resolve_rules(&diff_parsed);
+        let mut system = pb.system_prompt(&rules.text);
+
+        // Inject tool loop instructions if tools are enabled.
+        if request.options.use_tools {
+            let tool_instructions = "\n\n## Available Tools\n\n\
+                You have access to tools during this review. Use them to examine the codebase:\n\n\
+                - **file_read**: Read a file from the filesystem. Use this to see full file context.\n\
+                - **code_search**: Search the codebase for patterns (git grep). Use this to find references.\n\
+                - **file_find**: Find files by name pattern.\n\
+                - **submit_finding**: Submit a review finding (severity, category, message, file, line, suggestion).\n\
+                - **task_done**: Call this when you have completed the review.\n\n\
+                First examine the code with file_read/code_search, then submit findings with submit_finding, \
+                and finally call task_done when finished.";
+            if !system.contains("{tool_loop_instructions}") {
+                tracing::warn!(
+                    "System prompt template is missing '{{tool_loop_instructions}}' placeholder — appending instructions directly"
+                );
+                system.push_str(tool_instructions);
+            } else {
+                system = system.replace("{tool_loop_instructions}", tool_instructions);
+            }
+        } else {
+            system = system.replace("{tool_loop_instructions}", "");
+        }
+        let system_tokens_estimated = pb.system_prompt_tokens(&rules.text);
+
+        // If tools are enabled, short-circuit to the tool loop BEFORE the concurrent path
+        // so use_tools works for multi-file reviews.
+        if use_tools {
+            // Build the user prompt first
+            let make_ctx = || PromptContext {
+                title: resolved.pr_title.as_deref().unwrap_or("(untitled)"),
+                description: resolved.description.as_deref().unwrap_or(""),
+                owner: resolved.owner.as_deref().unwrap_or(""),
+                repo: resolved.repo.as_deref().unwrap_or(""),
+                author: resolved.author.as_deref().unwrap_or(""),
+                branch: resolved.branch.as_deref().unwrap_or(""),
+                base: resolved.base.as_deref().unwrap_or(""),
+                language_hint: resolved.language_hint.as_deref(),
+            };
+
+            let (
+                files_changed,
+                files_reviewed,
+                files_skipped,
+                files_path_filtered,
+                files_budget_dropped,
+                user,
+                input_tokens_estimated,
+            ) = if let Some(file_contents) = resolved.file_contents.as_ref() {
+                Self::build_file_prompt(
+                    file_contents,
+                    &pb,
+                    &make_ctx(),
+                    &extra,
+                    &path_filter,
+                    self.diff_svc.max_tokens(),
+                    system_tokens_estimated,
+                )
+            } else {
+                Self::build_diff_prompt_from_parsed(
+                    diff_files_changed,
+                    &diff_parsed,
+                    &pb,
+                    &make_ctx(),
+                    &extra,
+                    &path_filter,
+                    &self.diff_svc,
+                    system_tokens_estimated,
+                )
+            };
+
+            let (tool_content, tool_findings, tool_out_tokens) = self
+                .run_tool_loop(&system, &user, &diff_parsed, &resolved)
+                .await?;
+
+            // Apply post-hoc review filter and line relocation to tool loop findings
+            let mut tool_findings = tool_findings;
+            if !tool_findings.is_empty() && !resolved.raw_diff.is_empty() {
+                if let Ok(filtered) = crate::services::review_filter::review_filter(
+                    &self.ai,
+                    &tool_findings,
+                    &resolved.raw_diff,
+                )
+                .await
+                {
+                    if filtered.len() < tool_findings.len() {
+                        let removed = tool_findings.len() - filtered.len();
+                        tracing::info!(
+                            removed,
+                            "Review filter removed false positives from tool loop findings"
+                        );
+                        tool_findings = filtered;
+                    }
+                }
+            }
+            if !tool_findings.is_empty() && !diff_parsed.is_empty() {
+                let _ = crate::services::relocation::resolve_line_numbers(
+                    &self.ai,
+                    &mut tool_findings,
+                    &diff_parsed,
+                )
+                .await;
+            }
+
+            let elapsed = start.elapsed().as_millis() as u64;
+            let total_tokens = tool_out_tokens
+                .map(|t| system_tokens_estimated + input_tokens_estimated + t as usize);
+
+            // Post to GitHub if requested
+            if post_to_github {
+                if let (Some(owner), Some(repo)) = (resolved.owner.as_ref(), resolved.repo.as_ref())
+                {
+                    if let Some(number) = resolved.pr_number {
+                        if let Some(ref github) = self.github_svc {
+                            if request.options.sticky {
+                                github
+                                    .post_or_update_review(owner, repo, number, &tool_content)
+                                    .await?;
+                            } else {
+                                github
+                                    .post_review(owner, repo, number, &tool_content)
+                                    .await?;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Finalize session
+            if let Some(s) = session.take() {
+                s.finalize(files_changed);
+            }
+
+            return Ok(ReviewResult {
+                review_text: tool_content,
+                findings: tool_findings,
+                pr_number: resolved.pr_number,
+                pr_title: resolved.pr_title.clone(),
+                stats: ReviewStats {
+                    files_changed,
+                    files_reviewed,
+                    files_skipped,
+                    files_path_filtered,
+                    files_budget_dropped,
+                    input_tokens_estimated,
+                    system_tokens_estimated,
+                    output_tokens_reported: tool_out_tokens,
+                    total_tokens_used: total_tokens,
+                    latency_ms: elapsed,
+                    model: self.ai.model_name().to_string(),
+                    prompt_version: format!("{}/1", resolved.domain),
+                    domain: resolved.domain.clone(),
+                },
+                session_id: session_id.clone(),
+            });
+        }
+
+        // For multi-file sources with available concurrency, use the concurrent path.
+        // This check runs after the tool loop check so use_tools takes priority.
+        if let Some(file_contents) = resolved.file_contents.as_ref() {
+            if file_contents.len() > 1 && self.concurrency_sem.available_permits() > 0 {
+                return self
+                    .review_concurrent(
+                        file_contents,
+                        &resolved,
+                        &extra,
+                        &path_filter,
+                        post_to_github,
+                        request.options.sticky,
+                        start,
+                        session_id.clone(),
+                        &rules.text,
+                    )
+                    .await;
+            }
+        }
 
         let make_ctx = || PromptContext {
             title: resolved.pr_title.as_deref().unwrap_or("(untitled)"),
@@ -399,15 +646,18 @@ impl ReviewEngine {
                 &extra,
                 &path_filter,
                 self.diff_svc.max_tokens(),
+                system_tokens_estimated,
             )
         } else {
-            Self::build_diff_prompt(
-                &resolved.raw_diff,
+            Self::build_diff_prompt_from_parsed(
+                diff_files_changed,
+                &diff_parsed,
                 &pb,
                 &make_ctx(),
                 &extra,
                 &path_filter,
                 &self.diff_svc,
+                system_tokens_estimated,
             )
         };
 
@@ -484,14 +734,49 @@ impl ReviewEngine {
             );
         }
 
+        // ── 7c. Post-hoc review filter ──────────────────────────
+        // Ask the AI to identify and remove false positives.
+        if !findings.is_empty() && !resolved.raw_diff.is_empty() {
+            if let Ok(filtered) = crate::services::review_filter::review_filter(
+                &self.ai,
+                &findings,
+                &resolved.raw_diff,
+            )
+            .await
+            {
+                if filtered.len() < findings.len() {
+                    let removed = findings.len() - filtered.len();
+                    tracing::info!(removed, "Review filter removed false positives");
+                    findings = filtered;
+                }
+            }
+        }
+
+        // ── 7d. Line number re-location ─────────────────────────
+        // Attempt to resolve line numbers for findings that lack them.
+        if !findings.is_empty() && !diff_parsed.is_empty() {
+            let _ = crate::services::relocation::resolve_line_numbers(
+                &self.ai,
+                &mut findings,
+                &diff_parsed,
+            )
+            .await;
+        }
+
         // ── 8. Post (optional, always Markdown) ─────────────────
         if post_to_github {
             if let (Some(owner), Some(repo)) = (resolved.owner.as_ref(), resolved.repo.as_ref()) {
                 if let Some(number) = resolved.pr_number {
                     if let Some(ref github) = self.github_svc {
-                        github
-                            .post_review(owner, repo, number, &review_text)
-                            .await?;
+                        if request.options.sticky {
+                            github
+                                .post_or_update_review(owner, repo, number, &review_text)
+                                .await?;
+                        } else {
+                            github
+                                .post_review(owner, repo, number, &review_text)
+                                .await?;
+                        }
                     } else {
                         tracing::error!(
                             "post_to_github is true but GITHUB_TOKEN is not configured — \
@@ -522,6 +807,11 @@ impl ReviewEngine {
             "Review complete"
         );
 
+        // Finalize session
+        if let Some(s) = session.take() {
+            s.finalize(files_changed);
+        }
+
         let total_tokens_used = output_tokens_reported
             .map(|t| system_tokens_estimated + input_tokens_estimated + t as usize);
 
@@ -545,46 +835,321 @@ impl ReviewEngine {
                 prompt_version: format!("{}/1", resolved.domain),
                 domain: resolved.domain.clone(),
             },
+            session_id: session_id.clone(),
         })
     }
 
-    /// Build the user prompt from diff content, applying filters and budget.
-    fn build_diff_prompt(
-        raw_diff: &str,
+    /// Review multiple files concurrently, each as an independent AI call.
+    /// Results are merged into a single ReviewResult.
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
+    async fn review_concurrent(
+        &self,
+        file_contents: &[FileContent],
+        resolved: &ResolvedSource,
+        extra: &str,
+        path_filter: &[String],
+        post_to_github: bool,
+        sticky: bool,
+        start: Instant,
+        session_id: Option<String>,
+        rules_text: &str,
+    ) -> Result<ReviewResult> {
+        // Phase 1: build all prompts (owned strings).
+        let pb = PromptBuilder::new(&resolved.domain);
+        let system = pb.system_prompt(rules_text);
+        let system_tokens = pb.system_prompt_tokens(rules_text);
+
+        struct Prompt {
+            system: String,
+            user: String,
+        }
+        let mut prompts: Vec<Prompt> = Vec::with_capacity(file_contents.len());
+        let mut all_input_tokens = 0usize;
+
+        for fc in file_contents {
+            let single = std::slice::from_ref(fc);
+            let ctx = PromptContext {
+                title: resolved.pr_title.as_deref().unwrap_or("(untitled)"),
+                description: resolved.description.as_deref().unwrap_or(""),
+                owner: "",
+                repo: "",
+                author: "",
+                branch: "",
+                base: "",
+                language_hint: None,
+            };
+            let (_, _, _, _, _, user, ite) = Self::build_file_prompt(
+                single,
+                &pb,
+                &ctx,
+                extra,
+                path_filter,
+                16000,
+                system_tokens,
+            );
+            all_input_tokens += ite;
+            prompts.push(Prompt {
+                system: system.clone(),
+                user,
+            });
+        }
+
+        // Phase 2: fire AI calls via tokio::spawn for true concurrency.
+        let ai = self.ai.clone();
+        let mut handles = Vec::with_capacity(prompts.len());
+
+        for p in prompts {
+            let permit = self.concurrency_sem.clone().acquire_owned().await;
+            let ai = ai.clone();
+            handles.push(tokio::spawn(async move {
+                let _held = permit;
+                ai.chat(&p.system, &p.user).await
+            }));
+        }
+
+        // Phase 3: collect and merge results.
+        let mut all_review_text = String::new();
+        let mut all_findings = Vec::new();
+        let mut total_output_tokens: Option<u32> = None;
+        let mut succeeded = 0usize;
+
+        for handle in handles {
+            match handle.await {
+                Ok(Ok(chat_output)) => {
+                    let sanitized = crate::services::sanitize_output(&chat_output.content);
+                    let extracted = JsonExtractor::extract(&sanitized);
+                    if !all_review_text.is_empty() {
+                        all_review_text.push_str("\n\n---\n\n");
+                    }
+                    all_review_text.push_str(&extracted.review_text);
+                    all_findings.extend(extracted.findings);
+                    total_output_tokens =
+                        chat_output.usage.as_ref().and_then(|u| u.completion_tokens);
+                    succeeded += 1;
+                }
+                Ok(Err(e)) => tracing::warn!(error = %e, "Concurrent AI call failed"),
+                Err(e) => tracing::warn!(error = %e, "Concurrent task panicked"),
+            }
+        }
+
+        let latency_ms = start.elapsed().as_millis() as u64;
+
+        // Post to GitHub if requested
+        if post_to_github {
+            if let (Some(owner), Some(repo)) = (resolved.owner.as_ref(), resolved.repo.as_ref()) {
+                if let Some(number) = resolved.pr_number {
+                    if let Some(ref github) = self.github_svc {
+                        if sticky {
+                            github
+                                .post_or_update_review(owner, repo, number, &all_review_text)
+                                .await?;
+                        } else {
+                            github
+                                .post_review(owner, repo, number, &all_review_text)
+                                .await?;
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(ReviewResult {
+            review_text: all_review_text,
+            findings: all_findings,
+            pr_number: resolved.pr_number,
+            pr_title: resolved.pr_title.clone(),
+            stats: ReviewStats {
+                files_changed: file_contents.len(),
+                files_reviewed: succeeded,
+                files_skipped: file_contents.len().saturating_sub(succeeded),
+                files_path_filtered: 0,
+                files_budget_dropped: 0,
+                input_tokens_estimated: all_input_tokens,
+                system_tokens_estimated: system_tokens,
+                output_tokens_reported: total_output_tokens,
+                total_tokens_used: total_output_tokens
+                    .map(|t| system_tokens + all_input_tokens + t as usize),
+                latency_ms,
+                model: self.ai.model_name().to_string(),
+                prompt_version: format!("{}/1", resolved.domain),
+                domain: resolved.domain.clone(),
+            },
+            session_id: session_id.clone(),
+        })
+    }
+
+    /// Run the interactive LLM tool loop.
+    ///
+    /// Sends the system + user prompt with tool definitions, executes tool
+    /// calls, and loops until the AI returns a text response or max rounds reached.
+    async fn run_tool_loop(
+        &self,
+        system: &str,
+        user: &str,
+        _diff_files: &[crate::diff::DiffFile],
+        _resolved: &ResolvedSource,
+    ) -> Result<(String, Vec<ReviewFinding>, Option<u32>)> {
+        let tools = crate::tools::ToolRegistry::code_domain();
+        let tool_defs = tools.tool_defs();
+
+        let mut messages = vec![
+            crate::ai::Message {
+                role: "system".to_string(),
+                content: Some(system.to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            crate::ai::Message {
+                role: "user".to_string(),
+                content: Some(user.to_string()),
+                tool_calls: None,
+                tool_call_id: None,
+            },
+        ];
+
+        let max_rounds: usize = 10;
+        let mut all_findings: Vec<ReviewFinding> = Vec::new();
+        let mut total_output_tokens: Option<u32> = None;
+
+        for round in 0..max_rounds {
+            let output = self
+                .ai
+                .chat_with_tools(messages.clone(), tool_defs.clone())
+                .await?;
+            total_output_tokens = output.usage.as_ref().and_then(|u| u.completion_tokens);
+
+            match output.finish_reason.as_deref() {
+                Some("tool_calls") => {
+                    // Execute tool calls and append results
+                    struct ToolResult {
+                        tool_call_id: String,
+                        result: String,
+                    }
+                    let mut tool_results = Vec::new();
+                    for tc in &output.tool_calls {
+                        let args: serde_json::Value = serde_json::from_str(&tc.function.arguments)
+                            .unwrap_or(serde_json::json!({}));
+                        let (result, succeeded) =
+                            match tools.execute(&tc.function.name, args.clone()).await {
+                                Ok(output) => (output, true),
+                                Err(e) => (format!("Error: {}", e), false),
+                            };
+
+                        // Check for submitted findings — only if execution succeeded
+                        if tc.function.name == "submit_finding" && succeeded {
+                            all_findings.push(ReviewFinding {
+                                severity: args
+                                    .get("severity")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("info")
+                                    .to_string(),
+                                category: args
+                                    .get("category")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("other")
+                                    .to_string(),
+                                message: args
+                                    .get("message")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string(),
+                                file: args
+                                    .get("file")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string()),
+                                line: args.get("line").and_then(|v| v.as_u64()),
+                                suggestion: args
+                                    .get("suggestion")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string()),
+                            });
+                        }
+
+                        // If task_done, break out immediately
+                        if tc.function.name == "task_done" {
+                            // Collect any remaining findings
+                            return Ok((output.content, all_findings, total_output_tokens));
+                        }
+
+                        tool_results.push(ToolResult {
+                            tool_call_id: tc.id.clone(),
+                            result,
+                        });
+                    }
+
+                    // Append assistant message with tool_calls
+                    messages.push(crate::ai::Message {
+                        role: "assistant".to_string(),
+                        content: Some(output.content),
+                        tool_calls: Some(output.tool_calls),
+                        tool_call_id: None,
+                    });
+
+                    // Append tool result messages
+                    for tr in tool_results {
+                        messages.push(crate::ai::Message {
+                            role: "tool".to_string(),
+                            content: Some(tr.result),
+                            tool_calls: None,
+                            tool_call_id: Some(tr.tool_call_id),
+                        });
+                    }
+                }
+                Some("stop") | Some("length") | None => {
+                    // Text response — done
+                    return Ok((output.content, all_findings, total_output_tokens));
+                }
+                Some(reason) => {
+                    tracing::warn!(reason, "Unknown finish_reason in tool loop");
+                    return Ok((output.content, all_findings, total_output_tokens));
+                }
+            }
+
+            if round == max_rounds - 1 {
+                tracing::warn!("Tool loop reached max rounds ({})", max_rounds);
+            }
+        }
+
+        Ok((String::new(), all_findings, total_output_tokens))
+    }
+
+    /// Build the user prompt from already-parsed diff files, applying filters and budget.
+    #[allow(clippy::too_many_arguments)]
+    fn build_diff_prompt_from_parsed(
+        files_changed: usize,
+        filtered: &[crate::diff::DiffFile],
         pb: &PromptBuilder,
         ctx: &PromptContext<'_>,
         extra: &str,
         path_filter: &[String],
         diff_svc: &DiffService,
+        system_tokens: usize,
     ) -> (usize, usize, usize, usize, usize, String, usize) {
-        // Parse + filter
-        let (files_changed, filtered) = diff_svc
-            .parse_and_filter(raw_diff)
-            .unwrap_or_else(|_| (0, vec![]));
         let files_skipped = files_changed.saturating_sub(filtered.len());
 
         // Path filter
         let pre_path = filtered.len();
-        let after_path_filter: Vec<_> = if path_filter.is_empty() {
-            filtered
+        let after_path_filter: Vec<crate::diff::DiffFile> = if path_filter.is_empty() {
+            filtered.to_vec()
         } else {
             filtered
-                .into_iter()
+                .iter()
                 .filter(|f| {
                     path_filter
                         .iter()
                         .any(|p| !p.is_empty() && f.filename.starts_with(p))
                 })
+                .cloned()
                 .collect()
         };
         let files_path_filtered = pre_path.saturating_sub(after_path_filter.len());
 
         // Budget truncation
         let mut budgeted = after_path_filter;
-        let system_overhead = estimate_tokens(include_str!("../prompts/code/system.txt"));
         let overhead = PROMPT_OVERHEAD_BASELINE
             + PROMPT_OVERHEAD_PER_FILE * budgeted.len()
-            + system_overhead
+            + system_tokens
             + if extra.is_empty() {
                 0
             } else {
@@ -616,6 +1181,7 @@ impl ReviewEngine {
         extra: &str,
         path_filter: &[String],
         max_tokens: usize,
+        system_tokens: usize,
     ) -> (usize, usize, usize, usize, usize, String, usize) {
         let files_changed = file_contents.len();
 
@@ -639,10 +1205,9 @@ impl ReviewEngine {
 
         // Budget truncation
         let mut budgeted = after_path_filter;
-        let system_overhead = estimate_tokens(include_str!("../prompts/code/system.txt"));
         let overhead = PROMPT_OVERHEAD_BASELINE
             + PROMPT_OVERHEAD_PER_FILE * budgeted.len()
-            + system_overhead
+            + system_tokens
             + if extra.is_empty() {
                 0
             } else {

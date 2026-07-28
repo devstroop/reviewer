@@ -180,7 +180,7 @@ mod tests {
     #[test]
     fn test_read_single_valid_file() {
         let mut tmp = NamedTempFile::new().unwrap();
-        write!(tmp, "fn main() {{}}\n").unwrap();
+        writeln!(tmp, "fn main() {{}}").unwrap();
         let path = tmp.path().to_string_lossy().to_string();
         let fc = read_single(&path, None).unwrap();
         assert_eq!(fc.content, "fn main() {}\n");
