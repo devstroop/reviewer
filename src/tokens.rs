@@ -158,4 +158,31 @@ mod tests {
         assert_eq!(dropped, 0);
         assert_eq!(files.len(), 2);
     }
+
+    #[test]
+    fn truncate_removes_correct_indices() {
+        // Files ordered so that the two to-drop are at indices 0 and 2 (not
+        // contiguous). A naive removal in to_drop order (0 then 2) would shift
+        // index 2 -> 1 after removing 0, deleting the wrong file. Descending
+        // index sort (2 then 0) avoids this.
+        let mut files = vec![
+            make_file("drop_first.rs", 100, 20_000),
+            make_file("keep.rs", 10, 100),
+            make_file("drop_third.rs", 100, 20_000),
+        ];
+        let dropped = truncate_to_budget(&mut files, 500);
+        assert_eq!(dropped, 2);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].filename, "keep.rs");
+    }
+
+    #[test]
+    fn estimate_multibyte() {
+        // CJK characters are multiple bytes, so they should produce tokens
+        let tokens = estimate_tokens("你好世界");
+        assert!(
+            tokens >= 1,
+            "Expected at least 1 token for CJK, got {tokens}"
+        );
+    }
 }

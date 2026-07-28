@@ -13,7 +13,7 @@ use crate::services::{
     DiffService, GithubService, JsonExtractor, PromptBuilder, PromptContext,
     json_extractor::MIN_TOKENS_FOR_RETRY,
 };
-use crate::session::{self, Session};
+use crate::session::Session;
 use crate::tokens::estimate_tokens;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -426,13 +426,6 @@ impl ReviewEngine {
         .ok();
         let session_id = session.as_ref().map(|s| s.id().to_string());
 
-        // Check resume state if a session ID was provided.
-        let _resume_state = request
-            .options
-            .resume_session
-            .as_ref()
-            .and_then(|sid| session::load_resume_state(sid).ok());
-
         // Parse diff first so we can resolve rules from the actual file list.
         // This avoids double-parsing (once for rules, once for prompt building).
         let (diff_files_changed, diff_parsed) =
@@ -520,7 +513,7 @@ impl ReviewEngine {
                 )
             };
 
-            let (tool_content, tool_findings, tool_out_tokens, _) = self
+            let (tool_content, tool_findings, tool_out_tokens) = self
                 .run_tool_loop(&system, &user, &diff_parsed, &resolved)
                 .await?;
 
@@ -996,7 +989,7 @@ impl ReviewEngine {
         user: &str,
         _diff_files: &[crate::diff::DiffFile],
         _resolved: &ResolvedSource,
-    ) -> Result<(String, Vec<ReviewFinding>, Option<u32>, Option<u32>)> {
+    ) -> Result<(String, Vec<ReviewFinding>, Option<u32>)> {
         let tools = crate::tools::ToolRegistry::code_domain();
         let tool_defs = tools.tool_defs();
 
@@ -1076,12 +1069,7 @@ impl ReviewEngine {
                         // If task_done, break out immediately
                         if tc.function.name == "task_done" {
                             // Collect any remaining findings
-                            return Ok((
-                                output.content,
-                                all_findings,
-                                total_output_tokens,
-                                total_output_tokens,
-                            ));
+                            return Ok((output.content, all_findings, total_output_tokens));
                         }
 
                         tool_results.push(ToolResult {
@@ -1110,21 +1098,11 @@ impl ReviewEngine {
                 }
                 Some("stop") | Some("length") | None => {
                     // Text response — done
-                    return Ok((
-                        output.content,
-                        all_findings,
-                        total_output_tokens,
-                        total_output_tokens,
-                    ));
+                    return Ok((output.content, all_findings, total_output_tokens));
                 }
                 Some(reason) => {
                     tracing::warn!(reason, "Unknown finish_reason in tool loop");
-                    return Ok((
-                        output.content,
-                        all_findings,
-                        total_output_tokens,
-                        total_output_tokens,
-                    ));
+                    return Ok((output.content, all_findings, total_output_tokens));
                 }
             }
 
@@ -1133,12 +1111,7 @@ impl ReviewEngine {
             }
         }
 
-        Ok((
-            String::new(),
-            all_findings,
-            total_output_tokens,
-            total_output_tokens,
-        ))
+        Ok((String::new(), all_findings, total_output_tokens))
     }
 
     /// Build the user prompt from already-parsed diff files, applying filters and budget.

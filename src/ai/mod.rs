@@ -85,7 +85,6 @@ impl AiClient {
         tools: Vec<ToolDef>,
     ) -> Result<ChatOutput> {
         let url = format!("{}/chat/completions", self.api_base.trim_end_matches('/'));
-
         let request = ChatRequest {
             model: self.model.clone(),
             messages,
@@ -93,7 +92,6 @@ impl AiClient {
             max_tokens: Some(self.max_completion_tokens),
             tools: Some(tools),
         };
-
         self.send_request(&url, request).await
     }
 
@@ -105,8 +103,6 @@ impl AiClient {
         max_tokens: u32,
         tools: Option<Vec<ToolDef>>,
     ) -> Result<ChatOutput> {
-        let url = format!("{}/chat/completions", self.api_base.trim_end_matches('/'));
-
         let messages = vec![
             Message {
                 role: "system".to_string(),
@@ -121,16 +117,20 @@ impl AiClient {
                 tool_call_id: None,
             },
         ];
-
-        let request = ChatRequest {
-            model: self.model.clone(),
-            messages,
-            temperature: Some(self.temperature),
-            max_tokens: Some(max_tokens),
-            tools,
-        };
-
-        self.send_request(&url, request).await
+        match tools {
+            Some(t) => self.chat_with_tools(messages, t).await,
+            None => {
+                let url = format!("{}/chat/completions", self.api_base.trim_end_matches('/'));
+                let request = ChatRequest {
+                    model: self.model.clone(),
+                    messages,
+                    temperature: Some(self.temperature),
+                    max_tokens: Some(max_tokens),
+                    tools: None,
+                };
+                self.send_request(&url, request).await
+            }
+        }
     }
 
     /// Send a chat request and parse the response, handling both text and tool calls.

@@ -80,7 +80,9 @@ impl Session {
             timestamp: now(),
             pr_url: pr_url.map(|s| s.to_string()),
         };
-        writeln!(writer, "{}", serde_json::to_string(&record).unwrap()).map_err(AgentError::Io)?;
+        let json = serde_json::to_string(&record)
+            .map_err(|e| AgentError::Config(format!("Session serialization failed: {}", e)))?;
+        writeln!(writer, "{}", json).map_err(AgentError::Io)?;
 
         Ok(Self {
             id,
