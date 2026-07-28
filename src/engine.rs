@@ -433,23 +433,6 @@ impl ReviewEngine {
             .as_ref()
             .and_then(|sid| session::load_resume_state(sid).ok());
 
-        // For multi-file sources with available concurrency, use the concurrent path.
-        if let Some(file_contents) = resolved.file_contents.as_ref() {
-            if file_contents.len() > 1 && self.concurrency_sem.available_permits() > 0 {
-                return self
-                    .review_concurrent(
-                        file_contents,
-                        &resolved,
-                        &extra,
-                        &path_filter,
-                        post_to_github,
-                        start,
-                        session_id.clone(),
-                    )
-                    .await;
-            }
-        }
-
         // Parse diff first so we can resolve rules from the actual file list.
         // This avoids double-parsing (once for rules, once for prompt building).
         let (diff_files_changed, diff_parsed) =
@@ -478,11 +461,170 @@ impl ReviewEngine {
                 - **task_done**: Call this when you have completed the review.\n\n\
                 First examine the code with file_read/code_search, then submit findings with submit_finding, \
                 and finally call task_done when finished.";
-            system = system.replace("{tool_loop_instructions}", tool_instructions);
+            if !system.contains("{tool_loop_instructions}") {
+                tracing::warn!(
+                    "System prompt template is missing '{{tool_loop_instructions}}' placeholder — appending instructions directly"
+                );
+                system.push_str(tool_instructions);
+            } else {
+                system = system.replace("{tool_loop_instructions}", tool_instructions);
+            }
         } else {
             system = system.replace("{tool_loop_instructions}", "");
         }
         let system_tokens_estimated = pb.system_prompt_tokens(&rules.text);
+
+        // If tools are enabled, short-circuit to the tool loop BEFORE the concurrent path
+        // so use_tools works for multi-file reviews.
+        if use_tools {
+            // Build the user prompt first
+            let make_ctx = || PromptContext {
+                title: resolved.pr_title.as_deref().unwrap_or("(untitled)"),
+                description: resolved.description.as_deref().unwrap_or(""),
+                owner: resolved.owner.as_deref().unwrap_or(""),
+                repo: resolved.repo.as_deref().unwrap_or(""),
+                author: resolved.author.as_deref().unwrap_or(""),
+                branch: resolved.branch.as_deref().unwrap_or(""),
+                base: resolved.base.as_deref().unwrap_or(""),
+                language_hint: resolved.language_hint.as_deref(),
+            };
+
+            let (
+                files_changed,
+                files_reviewed,
+                files_skipped,
+                files_path_filtered,
+                files_budget_dropped,
+                user,
+                input_tokens_estimated,
+            ) = if let Some(file_contents) = resolved.file_contents.as_ref() {
+                Self::build_file_prompt(
+                    file_contents,
+                    &pb,
+                    &make_ctx(),
+                    &extra,
+                    &path_filter,
+                    self.diff_svc.max_tokens(),
+                    system_tokens_estimated,
+                )
+            } else {
+                Self::build_diff_prompt_from_parsed(
+                    diff_files_changed,
+                    &diff_parsed,
+                    &pb,
+                    &make_ctx(),
+                    &extra,
+                    &path_filter,
+                    &self.diff_svc,
+                    system_tokens_estimated,
+                )
+            };
+
+            let (tool_content, tool_findings, tool_out_tokens, _) = self
+                .run_tool_loop(&system, &user, &diff_parsed, &resolved)
+                .await?;
+
+            // Apply post-hoc review filter and line relocation to tool loop findings
+            let mut tool_findings = tool_findings;
+            if !tool_findings.is_empty() && !resolved.raw_diff.is_empty() {
+                if let Ok(filtered) = crate::services::review_filter::review_filter(
+                    &self.ai,
+                    &tool_findings,
+                    &resolved.raw_diff,
+                )
+                .await
+                {
+                    if filtered.len() < tool_findings.len() {
+                        let removed = tool_findings.len() - filtered.len();
+                        tracing::info!(
+                            removed,
+                            "Review filter removed false positives from tool loop findings"
+                        );
+                        tool_findings = filtered;
+                    }
+                }
+            }
+            if !tool_findings.is_empty() && !diff_parsed.is_empty() {
+                let _ = crate::services::relocation::resolve_line_numbers(
+                    &self.ai,
+                    &mut tool_findings,
+                    &diff_parsed,
+                )
+                .await;
+            }
+
+            let elapsed = start.elapsed().as_millis() as u64;
+            let total_tokens = tool_out_tokens
+                .map(|t| system_tokens_estimated + input_tokens_estimated + t as usize);
+
+            // Post to GitHub if requested
+            if post_to_github {
+                if let (Some(owner), Some(repo)) = (resolved.owner.as_ref(), resolved.repo.as_ref())
+                {
+                    if let Some(number) = resolved.pr_number {
+                        if let Some(ref github) = self.github_svc {
+                            if request.options.sticky {
+                                github
+                                    .post_or_update_review(owner, repo, number, &tool_content)
+                                    .await?;
+                            } else {
+                                github
+                                    .post_review(owner, repo, number, &tool_content)
+                                    .await?;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Finalize session
+            if let Some(s) = session.take() {
+                s.finalize(files_changed);
+            }
+
+            return Ok(ReviewResult {
+                review_text: tool_content,
+                findings: tool_findings,
+                pr_number: resolved.pr_number,
+                pr_title: resolved.pr_title.clone(),
+                stats: ReviewStats {
+                    files_changed,
+                    files_reviewed,
+                    files_skipped,
+                    files_path_filtered,
+                    files_budget_dropped,
+                    input_tokens_estimated,
+                    system_tokens_estimated,
+                    output_tokens_reported: tool_out_tokens,
+                    total_tokens_used: total_tokens,
+                    latency_ms: elapsed,
+                    model: self.ai.model_name().to_string(),
+                    prompt_version: format!("{}/1", resolved.domain),
+                    domain: resolved.domain.clone(),
+                },
+                session_id: session_id.clone(),
+            });
+        }
+
+        // For multi-file sources with available concurrency, use the concurrent path.
+        // This check runs after the tool loop check so use_tools takes priority.
+        if let Some(file_contents) = resolved.file_contents.as_ref() {
+            if file_contents.len() > 1 && self.concurrency_sem.available_permits() > 0 {
+                return self
+                    .review_concurrent(
+                        file_contents,
+                        &resolved,
+                        &extra,
+                        &path_filter,
+                        post_to_github,
+                        request.options.sticky,
+                        start,
+                        session_id.clone(),
+                        &rules.text,
+                    )
+                    .await;
+            }
+        }
 
         let make_ctx = || PromptContext {
             title: resolved.pr_title.as_deref().unwrap_or("(untitled)"),
@@ -531,38 +673,6 @@ impl ReviewEngine {
             |co: &crate::ai::ChatOutput| co.finish_reason.as_deref() == Some("length");
         let reported_tokens =
             |co: &crate::ai::ChatOutput| co.usage.as_ref().and_then(|u| u.completion_tokens);
-
-        // If tools are enabled, use the interactive tool loop instead.
-        if use_tools {
-            let (tool_content, tool_findings, tool_out_tokens, _) = self
-                .run_tool_loop(&system, &user, &diff_parsed, &resolved)
-                .await?;
-            let elapsed = start.elapsed().as_millis() as u64;
-            let total_tokens = tool_out_tokens
-                .map(|t| system_tokens_estimated + input_tokens_estimated + t as usize);
-            return Ok(ReviewResult {
-                review_text: tool_content,
-                findings: tool_findings,
-                pr_number: resolved.pr_number,
-                pr_title: resolved.pr_title.clone(),
-                stats: ReviewStats {
-                    files_changed,
-                    files_reviewed,
-                    files_skipped,
-                    files_path_filtered,
-                    files_budget_dropped,
-                    input_tokens_estimated,
-                    system_tokens_estimated,
-                    output_tokens_reported: tool_out_tokens,
-                    total_tokens_used: total_tokens,
-                    latency_ms: elapsed,
-                    model: self.ai.model_name().to_string(),
-                    prompt_version: format!("{}/1", resolved.domain),
-                    domain: resolved.domain.clone(),
-                },
-                session_id: session_id.clone(),
-            });
-        }
 
         let mut chat_output = self.ai.chat(&system, &user).await?;
         let mut output_tokens_reported = reported_tokens(&chat_output);
@@ -739,20 +849,23 @@ impl ReviewEngine {
     /// Review multiple files concurrently, each as an independent AI call.
     /// Results are merged into a single ReviewResult.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     async fn review_concurrent(
         &self,
         file_contents: &[FileContent],
         resolved: &ResolvedSource,
         extra: &str,
         path_filter: &[String],
-        _post_to_github: bool,
+        post_to_github: bool,
+        sticky: bool,
         start: Instant,
         session_id: Option<String>,
+        rules_text: &str,
     ) -> Result<ReviewResult> {
         // Phase 1: build all prompts (owned strings).
         let pb = PromptBuilder::new(&resolved.domain);
-        let system = pb.system_prompt("");
-        let system_tokens = pb.system_prompt_tokens("");
+        let system = pb.system_prompt(rules_text);
+        let system_tokens = pb.system_prompt_tokens(rules_text);
 
         struct Prompt {
             system: String,
@@ -828,6 +941,25 @@ impl ReviewEngine {
         }
 
         let latency_ms = start.elapsed().as_millis() as u64;
+
+        // Post to GitHub if requested
+        if post_to_github {
+            if let (Some(owner), Some(repo)) = (resolved.owner.as_ref(), resolved.repo.as_ref()) {
+                if let Some(number) = resolved.pr_number {
+                    if let Some(ref github) = self.github_svc {
+                        if sticky {
+                            github
+                                .post_or_update_review(owner, repo, number, &all_review_text)
+                                .await?;
+                        } else {
+                            github
+                                .post_review(owner, repo, number, &all_review_text)
+                                .await?;
+                        }
+                    }
+                }
+            }
+        }
 
         Ok(ReviewResult {
             review_text: all_review_text,
