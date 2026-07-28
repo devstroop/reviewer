@@ -7,11 +7,12 @@
 # See ADR-018 for rationale on static linking + distroless.
 
 # ── Builder ──────────────────────────────────────────────────────────────────
-FROM rust:1.86-slim-bookworm AS builder
+FROM rust:latest-slim-bookworm AS builder
 
 RUN apt-get update && apt-get install -y \
     musl-tools \
     pkg-config \
+    libgit2-dev \
     && rm -rf /var/lib/apt/lists/*
 
 RUN rustup target add x86_64-unknown-linux-musl
