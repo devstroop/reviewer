@@ -6,6 +6,8 @@ of the code, not formatting.
 
 {system_rule}
 
+{tool_loop_instructions}
+
 ## Output format
 
 Your response MUST start with a JSON code block containing structured findings, followed by the markdown review:

@@ -441,7 +441,23 @@ impl ReviewEngine {
             };
 
         let rules = pb.resolve_rules(&diff_parsed);
-        let system = pb.system_prompt(&rules.text);
+        let mut system = pb.system_prompt(&rules.text);
+
+        // Inject tool loop instructions if tools are enabled.
+        if request.options.use_tools {
+            let tool_instructions = "\n\n## Available Tools\n\n\
+                You have access to tools during this review. Use them to examine the codebase:\n\n\
+                - **file_read**: Read a file from the filesystem. Use this to see full file context.\n\
+                - **code_search**: Search the codebase for patterns (git grep). Use this to find references.\n\
+                - **file_find**: Find files by name pattern.\n\
+                - **submit_finding**: Submit a review finding (severity, category, message, file, line, suggestion).\n\
+                - **task_done**: Call this when you have completed the review.\n\n\
+                First examine the code with file_read/code_search, then submit findings with submit_finding, \
+                and finally call task_done when finished.";
+            system = system.replace("{tool_loop_instructions}", tool_instructions);
+        } else {
+            system = system.replace("{tool_loop_instructions}", "");
+        }
         let system_tokens_estimated = pb.system_prompt_tokens(&rules.text);
 
         let make_ctx = || PromptContext {
