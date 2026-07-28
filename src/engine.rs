@@ -905,13 +905,14 @@ impl ReviewEngine {
                     for tc in &output.tool_calls {
                         let args: serde_json::Value = serde_json::from_str(&tc.function.arguments)
                             .unwrap_or(serde_json::json!({}));
-                        let result = tools
-                            .execute(&tc.function.name, args.clone())
-                            .await
-                            .unwrap_or_else(|e| format!("Error: {}", e));
+                        let (result, succeeded) =
+                            match tools.execute(&tc.function.name, args.clone()).await {
+                                Ok(output) => (output, true),
+                                Err(e) => (format!("Error: {}", e), false),
+                            };
 
-                        // Check for submitted findings
-                        if tc.function.name == "submit_finding" {
+                        // Check for submitted findings — only if execution succeeded
+                        if tc.function.name == "submit_finding" && succeeded {
                             all_findings.push(ReviewFinding {
                                 severity: args
                                     .get("severity")
