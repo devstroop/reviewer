@@ -35,7 +35,34 @@ impl Tool for FileRead {
             .and_then(|v| v.as_str())
             .ok_or_else(|| "Missing 'path' argument".to_string())?;
 
-        let content = tokio::fs::read_to_string(Path::new(path))
+        // Prevent path traversal by canonicalizing the requested path and
+        // verifying it stays within the current working directory.
+        let requested = Path::new(path);
+        let cwd = std::env::current_dir().map_err(|e| format!("Cannot determine CWD: {}", e))?;
+        let cwd_canonical = cwd
+            .canonicalize()
+            .map_err(|e| format!("Cannot canonicalize CWD: {}", e))?;
+
+        let requested_abs = if requested.is_absolute() {
+            requested.to_path_buf()
+        } else {
+            cwd_canonical.join(requested)
+        };
+
+        let requested_canonical = requested_abs
+            .canonicalize()
+            .map_err(|e| format!("Cannot access '{}': {}", path, e))?;
+
+        if !requested_canonical.starts_with(&cwd_canonical) {
+            return Err(format!(
+                "Path '{}' resolves to '{}' which is outside the working directory '{}' — directory traversal is not allowed.",
+                path,
+                requested_canonical.display(),
+                cwd_canonical.display(),
+            ));
+        }
+
+        let content = tokio::fs::read_to_string(&requested_canonical)
             .await
             .map_err(|e| format!("Failed to read '{}': {}", path, e))?;
 
@@ -66,7 +93,7 @@ impl Tool for FileRead {
         let excerpt = lines[start..end].join("\n");
         Ok(format!(
             "```\n{}:\n{}\n```\n(Lines {}-{} of {})",
-            path,
+            requested_canonical.display(),
             excerpt,
             start + 1,
             end,
