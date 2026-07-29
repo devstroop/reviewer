@@ -38,15 +38,10 @@ RUN case "${TARGETPLATFORM:-}" in \
 
 WORKDIR /app
 
-# Cache dependencies by copying manifests first.
+# Copy source and compile.  No separate cache-build layer: filesystem
+# mtime propagation across Docker COPY + RUN layers confuses cargo's
+# fingerprinting, producing a stale binary.  A single build avoids this.
 COPY Cargo.toml Cargo.lock ./
-RUN mkdir src/ prompts/ && \
-    echo "fn main() {}" > src/main.rs && \
-    touch src/lib.rs && \
-    cargo build --release --target "$(cat /tmp/rust-target)" 2>/dev/null || true
-RUN rm -rf src/ prompts/
-
-# Now copy the real source and rebuild (layer cache is warm).
 COPY src/ src/
 COPY prompts/ prompts/
 
