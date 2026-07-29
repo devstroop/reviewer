@@ -1,7 +1,9 @@
 # reviewer — GitHub Action
 #
-# Uses the pre-built Docker image published to GHCR by the release workflow.
-# The image is a statically-linked binary on distroless/static (~20 MB).
+# Uses the pre-built Docker image published to GHCR by the release workflow
+# when consumed via a release tag (e.g. @v0.3.0).  When used with the
+# `uses: ./` strategy (dogfooding in review.yml), the Dockerfile is built
+# from source so in-development fixes are picked up automatically.
 #
 # Usage:
 #   - uses: devstroop/reviewer@v0.3.0
@@ -41,7 +43,7 @@ inputs:
 
 runs:
   using: 'docker'
-  image: 'docker://ghcr.io/devstroop/reviewer:0.3.0'
+  image: 'Dockerfile'
   args:
     - review
     - --pr-url
