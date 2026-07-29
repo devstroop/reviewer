@@ -1,4 +1,4 @@
-# reviewer
+# Reviewer
 
 AI-powered reviewer — a single-binary Rust CLI that reviews GitHub Pull Requests using any OpenAI-compatible AI endpoint. Deployable as a Docker-based GitHub Action.
 
