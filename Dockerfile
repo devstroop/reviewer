@@ -21,9 +21,16 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Map Docker platform to Rust target triple (musl for fully static binary).
-RUN case "$TARGETPLATFORM" in \
+# Falls back to native arch detection when TARGETPLATFORM is unset (plain docker build).
+RUN case "${TARGETPLATFORM:-}" in \
       "linux/amd64")  RUST_TARGET="x86_64-unknown-linux-musl" ;; \
       "linux/arm64")  RUST_TARGET="aarch64-unknown-linux-musl" ;; \
+      "") \
+        case "$(uname -m)" in \
+          "x86_64"|"amd64")  RUST_TARGET="x86_64-unknown-linux-musl" ;; \
+          "aarch64"|"arm64") RUST_TARGET="aarch64-unknown-linux-musl" ;; \
+          *) echo "Unsupported native arch: $(uname -m)"; exit 1 ;; \
+        esac ;; \
       *) echo "Unsupported platform: $TARGETPLATFORM"; exit 1 ;; \
     esac && \
     rustup target add "$RUST_TARGET" && \
