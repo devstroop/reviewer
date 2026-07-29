@@ -1,10 +1,10 @@
 # reviewer — GitHub Action
 #
-# Runs the reviewer binary inside a Docker container built from the
-# repo's Dockerfile (multi-stage, distroless/static base).
+# Uses the pre-built Docker image published to GHCR by the release workflow.
+# The image is a statically-linked binary on distroless/static (~20 MB).
 #
 # Usage:
-#   - uses: devstroop/reviewer@v0.1.0
+#   - uses: devstroop/reviewer@v0.3.0
 #     with:
 #       github_token: ${{ secrets.GITHUB_TOKEN }}
 #       ai_api_key: ${{ secrets.AI_API_KEY }}
@@ -41,7 +41,7 @@ inputs:
 
 runs:
   using: 'docker'
-  image: 'Dockerfile'
+  image: 'docker://ghcr.io/devstroop/reviewer:0.3.0'
   args:
     - review
     - --pr-url
