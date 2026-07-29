@@ -4,6 +4,7 @@ use crate::engine::{ReviewEngine, ReviewOptions, ReviewRequest, ReviewSource};
 use crate::github::parse_pr_url;
 use serde::Deserialize;
 use serde_json::Value;
+use std::time::Duration;
 
 // ── Input structs for each tool ───────────────────────────────
 
@@ -22,6 +23,9 @@ pub(crate) struct ReviewPrArgs {
     /// If true, enable the LLM tool loop during review.
     #[serde(default)]
     pub use_tools: bool,
+    /// Maximum time in seconds to wait for the AI review (default: no limit).
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
 }
 
 fn default_post() -> bool {
@@ -42,6 +46,9 @@ pub(crate) struct ReviewDiffArgs {
     /// Output format: "reviewer" (default) or "sarif"
     #[serde(default = "default_format")]
     pub format: String,
+    /// Maximum time in seconds to wait for the AI review.
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
 }
 
 fn default_format() -> String {
@@ -60,6 +67,9 @@ pub(crate) struct ReviewFilesArgs {
     pub post: bool,
     #[serde(default)]
     pub extra_instructions: String,
+    /// Maximum time in seconds to wait for the AI review.
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -73,6 +83,8 @@ pub(crate) struct ReviewFileArgs {
     pub description: Option<String>,
     #[serde(default)]
     pub extra_instructions: String,
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -82,6 +94,9 @@ pub(crate) struct ReviewGlobArgs {
     pub domain: String,
     #[serde(default)]
     pub extra_instructions: String,
+    /// Maximum time in seconds to wait for the AI review.
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
 }
 
 // ── Tool definitions ──────────────────────────────────────────
@@ -98,7 +113,8 @@ pub(crate) fn tool_definitions() -> Vec<(String, String, Value)> {
                     "pr_url": { "type": "string", "description": "Full PR URL — e.g. https://github.com/owner/repo/pull/42, https://gitlab.com/o/r/-/merge_requests/7, or https://bitbucket.org/o/r/pull-requests/99" },
                     "post": { "type": "boolean", "description": "Whether to post the review to GitHub as a PR comment", "default": true },
                     "paths": { "type": "array", "items": { "type": "string" }, "description": "Only review files matching these path prefixes", "default": [] },
-                    "extra_instructions": { "type": "string", "description": "Extra context injected into the review prompt", "default": "" }
+                    "extra_instructions": { "type": "string", "description": "Extra context injected into the review prompt", "default": "" },
+                    "timeout_secs": { "type": "number", "description": "Maximum seconds to wait for AI review", "default": 0 }
                 },
                 "required": ["pr_url"]
             }),
@@ -115,7 +131,8 @@ pub(crate) fn tool_definitions() -> Vec<(String, String, Value)> {
                     "language": { "type": "string", "description": "Primary programming language hint (e.g. 'Rust', 'Python'). Only used in 'code' domain.", "default": "Unknown" },
                     "description": { "type": "string", "description": "Optional longer description of the change" },
                     "extra_instructions": { "type": "string", "description": "Extra context injected into the review prompt", "default": "" },
-                    "format": { "type": "string", "description": "Output format: 'reviewer' (default) or 'sarif'", "default": "reviewer" }
+                    "format": { "type": "string", "description": "Output format: 'reviewer' (default) or 'sarif'", "default": "reviewer" },
+                    "timeout_secs": { "type": "number", "description": "Maximum seconds to wait for AI review", "default": 0 }
                 },
                 "required": ["diff", "title"]
             }),
@@ -129,7 +146,8 @@ pub(crate) fn tool_definitions() -> Vec<(String, String, Value)> {
                     "pr_url": { "type": "string", "description": "Full PR URL — e.g. https://github.com/owner/repo/pull/42, https://gitlab.com/o/r/-/merge_requests/7, or https://bitbucket.org/o/r/pull-requests/99" },
                     "paths": { "type": "array", "items": { "type": "string" }, "description": "Only review files matching these path prefixes" },
                     "post": { "type": "boolean", "description": "Whether to post the review to GitHub", "default": false },
-                    "extra_instructions": { "type": "string", "description": "Extra context injected into the review prompt", "default": "" }
+                    "extra_instructions": { "type": "string", "description": "Extra context injected into the review prompt", "default": "" },
+                    "timeout_secs": { "type": "number", "description": "Maximum seconds to wait for AI review", "default": 0 }
                 },
                 "required": ["pr_url", "paths"]
             }),
@@ -144,7 +162,8 @@ pub(crate) fn tool_definitions() -> Vec<(String, String, Value)> {
                     "domain": { "type": "string", "description": "Review domain", "default": "code" },
                     "language": { "type": "string", "description": "Optional language override" },
                     "description": { "type": "string", "description": "Optional context for the review" },
-                    "extra_instructions": { "type": "string", "description": "Extra context injected into the review prompt", "default": "" }
+                    "extra_instructions": { "type": "string", "description": "Extra context injected into the review prompt", "default": "" },
+                    "timeout_secs": { "type": "number", "description": "Maximum seconds to wait for AI review", "default": 0 }
                 },
                 "required": ["path"]
             }),
@@ -157,7 +176,8 @@ pub(crate) fn tool_definitions() -> Vec<(String, String, Value)> {
                 "properties": {
                     "pattern": { "type": "string", "description": "Glob pattern, e.g. 'src/**/*.rs'" },
                     "domain": { "type": "string", "description": "Review domain", "default": "code" },
-                    "extra_instructions": { "type": "string", "description": "Extra context injected into the review prompt", "default": "" }
+                    "extra_instructions": { "type": "string", "description": "Extra context injected into the review prompt", "default": "" },
+                    "timeout_secs": { "type": "number", "description": "Maximum seconds to wait for AI review", "default": 0 }
                 },
                 "required": ["pattern"]
             }),
@@ -165,9 +185,35 @@ pub(crate) fn tool_definitions() -> Vec<(String, String, Value)> {
     ]
 }
 
+// ── Timeout helper ────────────────────────────────────────────
+
+/// Run a review with an optional timeout. Returns the review result,
+/// or a timeout error message if the review takes longer than `timeout_secs`.
+async fn run_with_timeout(
+    engine: &ReviewEngine,
+    request: ReviewRequest,
+    timeout_secs: Option<u64>,
+) -> std::result::Result<Value, String> {
+    let review_fut = async {
+        let result = engine
+            .review(request)
+            .await
+            .map_err(|e| format!("Review failed: {e}"))?;
+        serde_json::to_value(&result).map_err(|e| format!("Failed to serialize result: {e}"))
+    };
+
+    match timeout_secs {
+        Some(secs) if secs > 0 => tokio::time::timeout(Duration::from_secs(secs), review_fut)
+            .await
+            .map_err(|_| format!("Review timed out after {} seconds", secs))?,
+        _ => review_fut.await,
+    }
+}
+
 // ── Handler functions ─────────────────────────────────────────
 
 /// Parse a `pr_url` string into owner/repo/number.
+/// Accepts `https://github.com/owner/repo/pull/42` or `www.github.com` variant.
 ///
 /// Accepts `https://github.com/owner/repo/pull/42` or `www.github.com` variant.
 /// Handle the `review_pr` tool.
@@ -196,12 +242,7 @@ pub(crate) async fn handle_review_pr(
         },
     };
 
-    let result = engine
-        .review(request)
-        .await
-        .map_err(|e| format!("Review failed: {e}"))?;
-
-    serde_json::to_value(&result).map_err(|e| format!("Failed to serialize result: {e}"))
+    run_with_timeout(engine, request, args.timeout_secs).await
 }
 
 /// Handle the `review_diff` tool.
@@ -230,15 +271,14 @@ pub(crate) async fn handle_review_diff(
         },
     };
 
-    let result = engine
-        .review(request)
-        .await
-        .map_err(|e| format!("Review failed: {e}"))?;
-
     if args.format == "sarif" {
+        let result = engine
+            .review(request)
+            .await
+            .map_err(|e| format!("Review failed: {e}"))?;
         Ok(crate::sarif::to_sarif_value(&result))
     } else {
-        serde_json::to_value(&result).map_err(|e| format!("Failed to serialize result: {e}"))
+        run_with_timeout(engine, request, args.timeout_secs).await
     }
 }
 
@@ -267,12 +307,7 @@ pub(crate) async fn handle_review_file(
         },
     };
 
-    let result = engine
-        .review(request)
-        .await
-        .map_err(|e| format!("Review failed: {e}"))?;
-
-    serde_json::to_value(&result).map_err(|e| format!("Failed to serialize result: {e}"))
+    run_with_timeout(engine, request, args.timeout_secs).await
 }
 
 /// Handle the `review_glob` tool.
@@ -298,12 +333,7 @@ pub(crate) async fn handle_review_glob(
         },
     };
 
-    let result = engine
-        .review(request)
-        .await
-        .map_err(|e| format!("Review failed: {e}"))?;
-
-    serde_json::to_value(&result).map_err(|e| format!("Failed to serialize result: {e}"))
+    run_with_timeout(engine, request, args.timeout_secs).await
 }
 
 /// Handle the `review_files` tool.
@@ -336,10 +366,5 @@ pub(crate) async fn handle_review_files(
         },
     };
 
-    let result = engine
-        .review(request)
-        .await
-        .map_err(|e| format!("Review failed: {e}"))?;
-
-    serde_json::to_value(&result).map_err(|e| format!("Failed to serialize result: {e}"))
+    run_with_timeout(engine, request, args.timeout_secs).await
 }
