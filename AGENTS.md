@@ -5,19 +5,60 @@ Single-binary Rust CLI that reviews GitHub PRs via any OpenAI-compatible endpoin
 ## Architecture
 
 ```
-src/main.rs      — clap CLI (review + serve subcommands); event filter (skip bots/drafts)
-src/config.rs    — Settings::load() — TOML + env overlay (Sensitive<T> for secrets)
-src/error.rs     — AgentError enum (thiserror)
-src/sensitive.rs — Sensitive<T> — Display/Debug redacted as "***"
-src/github/      — reqwest client for GitHub API (done)
-src/diff.rs      — diff parser via diffy crate; binary files auto-skipped (done)
-src/tokens.rs    — (len*2)/7 token heuristic; safe margin overestimates tokens (done)
-src/language.rs  — extension→language lookup via sorted slice + Path::extension() (done)
-src/ai/          — OpenAI-compatible chat client; 90s timeout × 4 attempts ~7 min max (done)
-src/tools/       — review orchestrator (done)
-prompts/         — system/user prompt templates
-Dockerfile       — multi-stage Docker build (musl static → distroless/static) (done)
-action.yml       — GitHub Action metadata (Docker strategy) (done)
+src/
+├── main.rs           — clap CLI (review, serve, mcp, review-stdin, review-file, review-local, review-glob)
+├── lib.rs            — Module tree + re-exports
+├── engine.rs         — Core ReviewEngine: ReviewRequest → ReviewResult (standard, tool-loop, concurrent paths)
+├── config.rs         — Settings::load() — TOML + env overlay (Sensitive<T> for secrets)
+├── error.rs          — AgentError enum (thiserror)
+├── sensitive.rs      — Sensitive<T> — Display/Debug redacted as "***"
+├── session.rs        — JSONL session files: start → file_done/file_skipped → end (resume support)
+├── tokens.rs         — tiktoken-rs BPE token counting (falls back to heuristic)
+├── diff.rs           — Diff parser via diffy crate; binary files auto-skipped
+├── language.rs       — Extension → language lookup via sorted slice + Path::extension()
+├── logging.rs        — tracing subscriber (env-filter, JSON format)
+├── github/           — GitHub API client (reqwest, rate-limit, retry, find/edit comments)
+│   ├── mod.rs
+│   └── types.rs
+├── git/              — Local git integration (git2: open, diff_between, file_at, grep)
+│   ├── mod.rs
+│   └── local.rs
+├── ai/               — OpenAI-compatible chat client; chat, chat_with_tools, chat_with_max_tokens
+│   ├── mod.rs
+│   └── types.rs
+├── tools/            — LLM tool registry + individual tools
+│   ├── mod.rs
+│   ├── registry.rs   — Tool trait + ToolRegistry (code_domain preset)
+│   ├── file_read.rs  — Read files with canonicalize-based path traversal protection
+│   ├── code_search.rs— git grep search
+│   ├── file_find.rs  — Find files by name glob
+│   ├── submit_finding.rs — Submit structured review findings
+│   ├── task_done.rs  — Signal review completion
+│   └── review.rs     — ReviewTool (orchestrates PR review from CLI)
+├── mcp/              — MCP server tools (review_pr, review_diff, review_file, review_glob)
+│   └── tools.rs
+├── services/         — Shared services
+│   ├── mod.rs
+│   ├── prompt_builder.rs — Domain-aware prompt construction + rule resolution
+│   ├── github_service.rs — Wraps GitHub API calls
+│   ├── diff_service.rs   — Diff parsing + token budgeting
+│   ├── file_reader.rs    — Read single file or glob, truncate content to budget
+│   ├── json_extractor.rs — Extract structured JSON findings from AI output
+│   ├── review_filter.rs  — Post-hoc false-positive detection
+│   ├── relocation.rs     — Line-number correction via hunk matching + AI fallback
+│   └── sanitize.rs       — Strip workflow commands, ANSI from AI output
+├── sarif.rs          — SARIF output format for CI integration
+└── server/           — Webhook server for real-time PR processing
+    └── mod.rs
+prompts/
+├── code/system.txt   — Code review system prompt (with {system_rule}, {tool_loop_instructions} placeholders)
+├── code/rules/       — Built-in rules: rules.json + individual .md files
+├── config/           — Config review domain
+├── compliance/       — Compliance review domain
+├── data/             — Data review domain
+└── policy/           — Policy review domain
+Dockerfile            — Multi-stage Docker build (musl static → distroless/static)
+action.yml            — GitHub Action metadata (Docker strategy)
 ```
 
 ## Conventions
@@ -28,7 +69,14 @@ action.yml       — GitHub Action metadata (Docker strategy) (done)
 - **Event filtering**: Action no-ops unless event is `opened`, `synchronize`, or `reopened`. Draft PRs and bot senders are skipped (ADR-019).
 - **Diff source**: Fetched via `Accept: application/vnd.github.v3.diff` header, guaranteeing standard unified diff format (ADR-005).
 - **GitHub rate limiting**: Semaphore(10) + `governor` (100 req/min). AI retry via `backoff` (exp+jitter, 3 retries, 429/5xx only).
-- **Token budget**: 3.5 chars/token heuristic overestimates tokens, acting as a conservative safety cap (ADR-006).
+- **Token budget**: tiktoken-rs BPE encoding (`cl100k_base`) for accurate token counting. Falls back to (len×2)/7 heuristic if encoding unavailable (ADR-006).
+- **Review domains**: Each domain (code, config, compliance, policy, data) has its own `prompts/<domain>/system.txt` and `prompts/<domain>/user.txt`. The domain is resolved from the source.
+- **Rule system**: `prompts/code/rules/rules.json` contains built-in rules. Project-level `.reviewer/rules.json` is merged on top. Rules are matched against changed file paths and injected via `{system_rule}` placeholder in system prompt.
+- **Tool loop**: When `use_tools=true`, the engine short-circuits to `run_tool_loop` which gives the AI interactive tools (file_read, code_search, submit_finding). Results go through post-hoc filter + line relocation. GitHub posting respects the `sticky` flag.
+- **Concurrent reviews**: `review_concurrent` spawns per-file AI calls via `tokio::spawn`, throttled by `Arc<Semaphore>(4)`. Accepts `rules_text` and `sticky` for feature parity with the standard path.
+- **Session tracking**: `Session::new()` creates a JSONL file at `.reviewer/sessions/<id>.jsonl`. `record_file_done`/`finalize` write audit records. Session IDs are validated (alphanumeric + dash + underscore) for path traversal safety.
+- **Path traversal**: The `file_read` tool uses `canonicalize()` to resolve the requested path relative to CWD and rejects anything outside it. Imports from `tools/file_read.rs`.
+- **Engine flow**: `review()` in `engine.rs` resolves the source → parses diff → resolves rules → builds prompts → runs AI (standard / tool-loop / concurrent) → post-processes → posts to GitHub → finalizes session.
 - **HTTP**: single `reqwest::Client` with rustls-tls. Headers: `User-Agent: reviewer`, `Accept: application/vnd.github.v3.diff`.
 - **Logging**: `tracing` — JSON when `LOG_FORMAT=json`. Secrets redacted at type level.
 - **Tests**: `wiremock` for HTTP mocking. No network in CI.
@@ -48,15 +96,23 @@ action.yml       — GitHub Action metadata (Docker strategy) (done)
 
 ## Current State
 
-All phases complete. **116 tests pass**, 0 fail, 0 warnings (`cargo clippy -D warnings` clean).
+All phases complete. **219 tests pass**, 0 fail, 0 warnings (`cargo clippy -D warnings` clean).
 
 | Phase | What | Status |
 |-------|------|--------|
-| 1 | Foundation (config, error, sensitive, logging, CLI, CI) | ✅ `master` |
-| 2 | GitHub Client (reqwest, rate-limit, retry) | ✅ PR #1 → `master` |
-| 3 | Diff Parser, Token Manager, Language Detection | ✅ `master` |
-| 4 | AI Client (OpenAI-compatible, timeout, retry) | ✅ `master` |
-| 5 | Review Orchestrator (`tools/review.rs`) | ✅ `master` |
-| 6 | E2E Integration Tests (wiremock, 8 integration tests) | ✅ `master` |
-| 7 | Docker & Release (Dockerfile, action.yml, release.yml, nightly smoke) | ✅ `master` |
-| 8 | Documentation & Polish (README, AGENTS.md, CONTRIBUTING.md) | ✅ `master` |
+| 1–8 | Foundation → Documentation & Polish | ✅ `master` |
+| 9 | Accurate token counting (tiktoken-rs BPE) | ✅ `develop` |
+| 10 | LLM tool loop (file_read, code_search, file_find, submit_finding, task_done) | ✅ `develop` |
+| 11 | Tool registry + AI client tool call support (ToolDef, ToolCall, ToolResult) | ✅ `develop` |
+| 12 | Post-hoc accuracy filter + line-number relocation | ✅ `develop` |
+| 13 | Sticky PR comments (find_comment, edit_comment, post_or_update_review) | ✅ `develop` |
+| 14 | Local git review via git2 (LocalRepo, ReviewSource::LocalBranch) | ✅ `develop` |
+| 15 | Rule system (built-in + project .reviewer/rules.json, 2000-token budget) | ✅ `develop` |
+| 16 | New review domains (config, compliance, policy, data) | ✅ `develop` |
+| 17 | Session persistence (JSONL files, resume support, session_id in result) | ✅ `develop` |
+| 18 | MCP server integration (review_pr, review_diff, review_file, review_glob) | ✅ `develop` |
+| 19 | Concurrent per-file review (Arc<Semaphore>, review_concurrent) | ✅ `develop` |
+| 20 | SARIF output format | ✅ `develop` |
+| 21 | Webhook server for real-time processing | ✅ `develop` |
+| 22 | Path traversal protection (canonicalize-based in file_read tool) | ✅ `develop` |
+| 23 | Session security (ID validation, SHA-256 fingerprints) | ✅ `develop` |
