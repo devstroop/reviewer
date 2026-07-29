@@ -333,7 +333,7 @@ mod tests {
         assert_eq!(json["messages"][0]["role"], "system");
         assert_eq!(json["messages"][1]["content"], "Review this diff");
         assert_eq!(json["temperature"], 0.2);
-        assert_eq!(json["max_completion_tokens"], 4096);
+        assert_eq!(json["max_tokens"], 4096);
     }
 
     #[test]
