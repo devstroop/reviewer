@@ -11,8 +11,8 @@ AI-powered reviewer — a single-binary Rust CLI that reviews GitHub Pull Reques
 ### As a GitHub Action
 
 ```yaml
-# .github/workflows/reviewer.yml
-name: Reviewer
+# .github/workflows/review.yml
+name: Review
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
